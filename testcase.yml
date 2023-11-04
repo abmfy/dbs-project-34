@@ -1,0 +1,8 @@
+compile:
+  commands: make
+
+run:
+  commands: ["python3", "hello.py"]
+  flags:
+    - no_use
+

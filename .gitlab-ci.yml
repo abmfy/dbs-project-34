@@ -1,0 +1,20 @@
+default:
+  image: dbs-testcase:latest
+
+stages:
+  - test
+
+run-all-test:
+  tags:
+    - dbs-2023
+  stage: test
+  script:
+    - git clone --depth 1 https://oauth:${TEST_CASE_READ_KEY}@git.tsinghua.edu.cn/dbs/2023/public/dbs-testcase.git
+    - CI_FILE_HASH=${CI_FILE_HASH} python dbs-testcase/run-ci.py
+  after_script:
+    - rm -rf /builds 2&> /dev/null || true
+  rules:
+    - if: $CI_COMMIT_BRANCH == "ci"
+    - when: manual
+  resource_group: run-test
+    
