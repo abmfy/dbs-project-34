@@ -7,14 +7,15 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("Readline error: {0}")]
-    ReadlineError(ReadlineError),
-}
+    #[error("Database {0} already exists")]
+    DatabaseExists(String),
+    #[error("Database {0} not found")]
+    DatabaseNotFound(String),
 
-impl From<ReadlineError> for Error {
-    fn from(err: ReadlineError) -> Self {
-        Self::ReadlineError(err)
-    }
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+    #[error("Readline error: {0}")]
+    ReadlineError(#[from] ReadlineError),
 }
 
 pub type Result<T> = result::Result<T, Error>;

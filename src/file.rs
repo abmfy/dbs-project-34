@@ -140,6 +140,12 @@ impl PageCache {
         Ok(())
     }
 
+    /// Close all files and clear the cache.
+    pub fn clear(&mut self) {
+        self.files.clear();
+        self.cache.clear();
+    }
+
     /// Probe the cache for a given page on a file.
     /// Reload if cache miss.
     fn cache_probe(&mut self, file: Uuid, page: usize) -> io::Result<()> {

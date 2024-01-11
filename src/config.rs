@@ -1,5 +1,7 @@
 //! Configuration constants and command line arguments.
 
+use std::path::PathBuf;
+
 use clap::Parser;
 
 pub const PAGE_SIZE: usize = 8192;
@@ -19,4 +21,8 @@ pub struct Config {
     /// Specify database.
     #[clap(short, long)]
     pub database: Option<String>,
+
+    /// Specify path to data directory.
+    #[clap(short, long, default_value = "data")]
+    pub path: PathBuf,
 }

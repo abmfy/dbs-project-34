@@ -4,16 +4,18 @@ mod file;
 mod record;
 mod schema;
 mod setup;
+mod system;
 
 use rustyline::{config::Configurer, error::ReadlineError, DefaultEditor};
 
 use error::Result;
+use system::System;
 
-fn batch_main() -> Result<()> {
+fn batch_main(system: System) -> Result<()> {
     Ok(())
 }
 
-fn shell_main() -> Result<()> {
+fn shell_main(system: System) -> Result<()> {
     let mut rl = DefaultEditor::new()?;
     rl.set_auto_add_history(true);
 
@@ -40,9 +42,11 @@ fn main() -> Result<()> {
     setup::init_logging();
     let config = setup::init_config();
 
+    let system = system::System::new(config.path.clone());
+
     if config.batch {
-        batch_main()
+        batch_main(system)
     } else {
-        shell_main()
+        shell_main(system)
     }
 }
