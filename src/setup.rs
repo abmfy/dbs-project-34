@@ -1,4 +1,5 @@
-/// Basic setup functions.
+//! Basic setup functions.
+
 use env_logger::{self, Env};
 
 pub fn init_logging() {

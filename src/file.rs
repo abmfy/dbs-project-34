@@ -1,34 +1,19 @@
-/// Paged file system, with LRU cache.
+//! Paged file system, with LRU cache.
+
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
-use std::hash::{Hash, Hasher};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::num::NonZeroUsize;
 
 use lru::LruCache;
 use uuid::Uuid;
 
-const PAGE_SIZE: usize = 8192;
-const CACHE_SIZE: usize = 8192;
+use crate::config::{CACHE_SIZE, PAGE_SIZE};
 
 /// File wrapper providing a uuid for hashing.
 pub struct File {
     id: Uuid,
     file: fs::File,
-}
-
-impl PartialEq for File {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-
-impl Eq for File {}
-
-impl Hash for File {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.id.hash(state);
-    }
 }
 
 impl File {

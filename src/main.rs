@@ -1,6 +1,10 @@
+mod config;
+mod error;
 mod file;
+mod record;
+mod schema;
 mod setup;
 
 fn main() {
-    println!("Hello, world!");
+    setup::init_logging();
 }
