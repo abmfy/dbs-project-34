@@ -1,14 +1,20 @@
 //! Error definitions.
 
 use std::result;
-use std::string::FromUtf8Error;
 
+use rustyline::error::ReadlineError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    // #[error("IO error: {0}")]
-    // Utf8Error(FromUtf8Error),
+    #[error("Readline error: {0}")]
+    ReadlineError(ReadlineError),
+}
+
+impl From<ReadlineError> for Error {
+    fn from(err: ReadlineError) -> Self {
+        Self::ReadlineError(err)
+    }
 }
 
 pub type Result<T> = result::Result<T, Error>;
