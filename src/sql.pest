@@ -1,0 +1,54 @@
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT = _{ "--" ~ (!"\n" ~ ANY)* ~ "\n" }
+
+equal_or_assign = { "=" }
+less = { "<" }
+less_equal = { "<=" }
+greater = { ">" }
+greater_equal = { ">=" }
+not_equal = { "<>" }
+
+count = { "COUNT" }
+average = { "AVERAGE" }
+max = { "MAX" }
+min = { "MIN" }
+sum = { "SUM" }
+null = { "NULL" }
+
+identifier = @{ id_start ~ id_inner* }
+id_start = {
+    "_" | ASCII_ALPHA
+}
+id_inner = {
+    id_start | ASCII_DIGIT
+}
+
+integer = @{ ASCII_DIGIT+ }
+string = @{ "'" ~ (!"'" ~ ANY)* ~ "'" }
+float = @{ "-"? ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
+
+program = _{ SOI ~ statement* ~ EOI }
+
+statement = _{(
+        db_statement |
+        // table_statement |
+        // alter_statement |
+        null
+    ) ~ ";"
+}
+
+db_statement = {(
+    create_db_statement |
+    drop_db_statement |
+    show_dbs_statement |
+    use_db_statement |
+    show_tables_statement |
+    show_indexes_statement
+)}
+
+create_db_statement = { "CREATE" ~ "DATABASE" ~ identifier }
+drop_db_statement = { "DROP" ~ "DATABASE" ~ identifier }
+show_dbs_statement = { "SHOW" ~ "DATABASES" }
+use_db_statement = { "USE" ~ identifier }
+show_tables_statement = { "SHOW" ~ "TABLES" }
+show_indexes_statement = { "SHOW" ~ "INDEXES" }

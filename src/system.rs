@@ -1,16 +1,17 @@
 //! Database system management.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::error::{Error, Result};
 use crate::file::PageCache;
-use crate::setup;
 
 /// Database system manager.
 pub struct System {
     /// Path to data directory.
     base: PathBuf,
+    /// Current name of selected database.
+    db_name: Option<String>,
     /// Current selected database.
     db: Option<PathBuf>,
     /// Cached paged filesystem.
@@ -22,9 +23,15 @@ impl System {
     pub fn new(base: PathBuf) -> Self {
         Self {
             base,
+            db_name: None,
             db: None,
             fs: PageCache::new(),
         }
+    }
+
+    /// Get current selected database.
+    pub fn get_current_database(&self) -> &str {
+        self.db_name.as_ref().map_or("∅", |name| name.as_str())
     }
 
     /// Switch current database.
@@ -32,7 +39,7 @@ impl System {
     /// # Cache Flushing
     ///
     /// When switching database, the cache is flushed.
-    fn use_database(&mut self, name: &str) -> Result<()> {
+    pub fn use_database(&mut self, name: &str) -> Result<()> {
         let path = self.base.join(name);
         if !path.exists() {
             log::error!("Database {} not found", name);
@@ -49,20 +56,42 @@ impl System {
         log::info!("Switching to database {}, flushing cache", name);
         self.fs.clear();
 
+        self.db_name = Some(name.to_owned());
+        self.db = Some(path);
+
         log::info!("Using database {}", name);
         Ok(())
     }
 
+    /// Get a list of existing databases.
+    pub fn get_databases(&self) -> Result<Vec<String>> {
+        let mut ret = Vec::new();
+        for entry in fs::read_dir(&self.base)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                ret.push(
+                    path.file_name()
+                        .expect("Unexpected database name")
+                        .to_str()
+                        .expect("Unexpected database name")
+                        .to_owned(),
+                );
+            }
+        }
+        Ok(ret)
+    }
+
     /// Create a fresh new database.
     /// Error when the name is used.
-    fn create_database(&self, name: &str) -> Result<()> {
+    pub fn create_database(&self, name: &str) -> Result<()> {
         let path = self.base.join(name);
         if path.exists() {
             log::error!("Database {} already exists", name);
             return Err(Error::DatabaseExists(name.to_owned()));
         }
 
-        if let Err(err) = fs::create_dir(&path) {
+        if let Err(err) = fs::create_dir_all(&path) {
             log::error!("Failed to create database {}: {}", name, err);
             return Err(err.into());
         }
@@ -77,7 +106,7 @@ impl System {
     /// # Cache Flushing
     ///
     /// The cache is flushed when dropping current database.
-    fn drop_database(&mut self, name: &str) -> Result<()> {
+    pub fn drop_database(&mut self, name: &str) -> Result<()> {
         let path = self.base.join(name);
         if !path.exists() {
             log::error!("Database {} not found", name);
@@ -88,6 +117,7 @@ impl System {
         if let Some(db) = &self.db {
             if &path == db {
                 log::info!("Dropping current database. Flushing cache.");
+                self.db_name = None;
                 self.db = None;
                 self.fs.clear();
             }
@@ -106,6 +136,8 @@ impl System {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+
+    use crate::setup;
 
     use super::*;
 
