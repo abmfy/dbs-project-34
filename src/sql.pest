@@ -1,5 +1,5 @@
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
-COMMENT = _{ "--" ~ (!"\n" ~ ANY)* ~ "\n" }
+COMMENT = _{ "--" ~ (!"\n" ~ ANY)* ~ "\n"? }
 
 equal_or_assign = { "=" }
 less = { "<" }

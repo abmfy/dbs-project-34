@@ -1,3 +1,4 @@
+# CI tests
 all:
-	@echo "Python project needn't compile"
+	python ../dbs-testcase/run-ci.py
 

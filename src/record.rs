@@ -13,7 +13,7 @@ pub struct Record {
 
 impl Record {
     /// Deserialize a record from a buffer.
-    pub fn from_buf(buf: &[u8], mut offset: usize, schema: &TableSchema) -> Result<Self> {
+    pub fn from(buf: &[u8], mut offset: usize, schema: &TableSchema) -> Result<Self> {
         let nulls = BitSet::from_bytes(&buf[offset..offset + schema.null_bitmap_size()]);
         offset += schema.null_bitmap_size();
 
@@ -43,7 +43,7 @@ impl Record {
     }
 
     /// Save a record into a buffer.
-    pub fn into_buf(&self, buf: &mut [u8], mut offset: usize, schema: &TableSchema) -> Result<()> {
+    pub fn save_into(&self, buf: &mut [u8], mut offset: usize, schema: &TableSchema) -> Result<()> {
         let offset_orig = offset;
         offset += schema.null_bitmap_size();
 
@@ -127,11 +127,11 @@ mod tests {
                 Some(Value::Float(100.0)),
             ],
         };
-        record.into_buf(&mut buf, 0, &schema).unwrap();
+        record.save_into(&mut buf, 0, &schema).unwrap();
 
         log::info!("Test serializing. Buf: {:?}", &buf[..512]);
 
-        let record = Record::from_buf(&buf, 0, &schema).unwrap();
+        let record = Record::from(&buf, 0, &schema).unwrap();
 
         log::info!("Test deserializing. Record: {:?}", record);
 
@@ -150,11 +150,11 @@ mod tests {
                 None,
             ],
         };
-        record.into_buf(&mut buf, 0, &schema).unwrap();
+        record.save_into(&mut buf, 0, &schema).unwrap();
 
         log::info!("Test serializing. Buf: {:?}", &buf[..512]);
 
-        let record = Record::from_buf(&buf, 0, &schema).unwrap();
+        let record = Record::from(&buf, 0, &schema).unwrap();
 
         log::info!("Test deserializing. Record: {:?}", record);
 
@@ -245,11 +245,11 @@ mod tests {
             ],
         };
 
-        record.into_buf(&mut buf, 0, &schema).unwrap();
+        record.save_into(&mut buf, 0, &schema).unwrap();
 
         log::info!("Test serializing. Buf: {:?}", &buf[..512]);
 
-        let record = Record::from_buf(&buf, 0, &schema).unwrap();
+        let record = Record::from(&buf, 0, &schema).unwrap();
 
         log::info!("Test deserializing. Record: {:?}", record);
 

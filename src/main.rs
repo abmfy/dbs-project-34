@@ -8,6 +8,7 @@ mod setup;
 mod stat;
 mod system;
 
+use std::io;
 use std::time::Instant;
 
 use rustyline::{config::Configurer, error::ReadlineError, DefaultEditor};
@@ -18,8 +19,36 @@ use system::System;
 
 use crate::stat::QueryStat;
 
-fn batch_main(system: System) -> Result<()> {
-    Ok(())
+fn batch_main(mut system: System) -> Result<()> {
+    let mut buf = String::new();
+
+    loop {
+        buf.clear();
+        let size = io::stdin().read_line(&mut buf)?;
+        // EOF reached
+        if size == 0 {
+            break Ok(());
+        }
+        buf = buf.trim().to_string();
+        log::info!("Read line: {buf}");
+
+        if buf == "exit" {
+            break Ok(());
+        }
+
+        for (command, result) in parse(&mut system, &buf) {
+            match result {
+                Ok((table, _)) => {
+                    table.to_csv(io::stdout())?;
+                }
+                Err(err) => {
+                    println!("!ERROR");
+                    println!("{err}");
+                }
+            }
+            println!("@{command}");
+        }
+    }
 }
 
 fn shell_main(mut system: System) -> Result<()> {
@@ -52,21 +81,21 @@ fn shell_main(mut system: System) -> Result<()> {
                 if line.trim_end().ends_with(';') {
                     let command = buf.unwrap_or_default() + &line;
                     let start_time = Instant::now();
-                    match parse(&mut system, &command) {
-                        Ok(ret) => {
-                            if let Some((table, stat)) = ret {
+                    for (_, result) in parse(&mut system, &command) {
+                        match result {
+                            Ok((table, stat)) => {
                                 if !table.is_empty() {
                                     table.printstd();
                                 }
                                 match stat {
-                                    QueryStat::Query(size) => {
-                                        if size > 1 {
-                                            print!("{size} rows in set");
-                                        } else if size == 1 {
-                                            print!("1 row in set");
-                                        } else {
-                                            print!("Empty set");
-                                        }
+                                    QueryStat::Query(size) if size > 1 => {
+                                        print!("{size} rows in set");
+                                    }
+                                    QueryStat::Query(1) => {
+                                        print!("1 row in set");
+                                    }
+                                    QueryStat::Query(_) => {
+                                        print!("Empty set");
                                     }
                                     QueryStat::Update(size) => {
                                         print!("Query OK, ");
@@ -77,12 +106,12 @@ fn shell_main(mut system: System) -> Result<()> {
                                         }
                                     }
                                 }
+                                let elapsed = start_time.elapsed();
+                                println!(" ({:.2} sec)", elapsed.as_secs_f64());
                             }
-                            let elapsed = start_time.elapsed();
-                            println!(" ({:.2} sec)", elapsed.as_secs_f64());
-                        }
-                        Err(err) => {
-                            println!("{} {err}", console::style("Error:").bold().red());
+                            Err(err) => {
+                                println!("{} {err}", console::style("Error:").bold().red());
+                            }
                         }
                     }
                     buf = None;
@@ -117,7 +146,13 @@ fn main() -> Result<()> {
             log::info!("Removing database directory");
             std::fs::remove_dir_all(&config.path)?;
         }
-        return Ok(())
+        return Ok(());
+    }
+
+    // Create database directory if it doesn't exist.
+    if !config.path.exists() {
+        log::info!("Creating database directory");
+        std::fs::create_dir_all(&config.path)?;
     }
 
     let mut system = system::System::new(config.path.clone());

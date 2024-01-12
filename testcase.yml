@@ -1,8 +1,8 @@
 compile:
-  commands: make
+  commands: ["cargo", "build", "--release"]
 
 run:
-  commands: ["python3", "hello.py"]
+  commands: "./target/release/yoursql"
   flags:
     - no_use
 

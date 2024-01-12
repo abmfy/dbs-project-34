@@ -10,22 +10,39 @@ use crate::{error::Result, stat::QueryStat, system::System};
 #[grammar = "sql.pest"]
 enum SqlParser {}
 
-pub fn parse(system: &mut System, command: &str) -> Result<Option<(Table, QueryStat)>> {
+/// Parse a complete string.
+///
+/// # Returns
+///
+/// Returns a vector of command-result pairs, in which the result
+/// contains a result table and query statistics.
+pub fn parse<'a>(
+    system: &mut System,
+    command: &'a str,
+) -> Vec<(&'a str, Result<(Table, QueryStat)>)> {
     log::info!("Parsing command: {command}");
 
-    let sql = SqlParser::parse(Rule::program, command)?;
+    let sql = SqlParser::parse(Rule::program, command);
+    if let Err(err) = sql {
+        return vec![(command, Err(Box::new(err).into()))];
+    }
+
+    let sql = sql.unwrap();
+    let mut ret = vec![];
 
     for statement in sql {
         match statement.as_rule() {
             Rule::db_statement => {
-                return Ok(Some(parse_db_statement(system, statement.into_inner())?));
+                let command = statement.as_str();
+                let result = parse_db_statement(system, statement.into_inner());
+                ret.push((command, result));
             }
             _ => continue,
         }
     }
 
     // Empty statement
-    Ok(None)
+    ret
 }
 
 fn parse_db_statement(system: &mut System, statement: Pairs<Rule>) -> Result<(Table, QueryStat)> {
