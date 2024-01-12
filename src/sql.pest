@@ -1,4 +1,4 @@
-WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+    WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
 COMMENT = _{ "--" ~ (!"\n" ~ ANY)* ~ "\n"? }
 
 equal_or_assign = { "=" }
@@ -31,20 +31,20 @@ program = _{ SOI ~ statement* ~ EOI }
 
 statement = _{(
         db_statement |
-        // table_statement |
-        // alter_statement |
+        table_statement |
+        alter_statement |
         null
     ) ~ ";"
 }
 
-db_statement = {(
+db_statement = {
     create_db_statement |
     drop_db_statement |
     show_dbs_statement |
     use_db_statement |
     show_tables_statement |
     show_indexes_statement
-)}
+}
 
 create_db_statement = { "CREATE" ~ "DATABASE" ~ identifier }
 drop_db_statement = { "DROP" ~ "DATABASE" ~ identifier }
@@ -52,3 +52,113 @@ show_dbs_statement = { "SHOW" ~ "DATABASES" }
 use_db_statement = { "USE" ~ identifier }
 show_tables_statement = { "SHOW" ~ "TABLES" }
 show_indexes_statement = { "SHOW" ~ "INDEXES" }
+
+table_statement = {
+    create_table_statement |
+    drop_table_statement |
+    desc_statement |
+    load_statement |
+    insert_statement |
+    delete_statement |
+    update_statement |
+    select_statement
+}
+
+create_table_statement = {"CREATE" ~ "TABLE" ~ identifier ~ "(" ~ field_list ~ ")"}
+drop_table_statement = { "DROP" ~ "TABLE" ~ identifier }
+desc_statement = { "DESC" ~ identifier }
+load_statement = { "LOAD" ~ "DATA" ~ "INFILE" ~ string ~ "INTO" ~ "TABLE" ~ identifier ~ "FIELDS" ~ "TERMINATED" ~ "BY" ~ string }
+insert_statement = { "INSERT" ~ "INTO" ~ identifier ~ "VALUES" ~ "(" ~ value_lists ~ ")" }
+delete_statement = { "DELETE" ~ "FROM" ~ identifier ~ ("WHERE" ~ where_and_clause)? }
+update_statement = { "UPDATE" ~ identifier ~ "SET" ~ set_clause ~ "WHERE" ~ where_and_clause }
+select_statement = { "SELECT" ~ selectors ~ "FROM" ~ identifiers ~ ("WHERE" ~ where_and_clause)? ~ ("GROUP" ~ "BY" ~ group_by_clause)? ~ ("ORDER" ~ "BY" ~ order_by_clause)? ~ ("LIMIT" ~ limit_clause)? }
+
+alter_statement = {
+    alter_add_index |
+    alter_drop_index |
+    alter_drop_primary_key |
+    alter_drop_foreign_key |
+    alter_add_primary_key |
+    alter_add_foreign_key |
+    alter_add_unique
+}
+alter_add_index = { "ALTER" ~ "TABLE" ~ identifier ~ "ADD" ~ "INDEX" ~ index_identifier? ~ "(" ~ identifiers ~ ")" }
+alter_drop_index = { "ALTER" ~ "TABLE" ~ identifier ~ "DROP" ~ "INDEX" ~ index_identifier }
+alter_drop_primary_key = { "ALTER" ~ "TABLE" ~ identifier ~ "DROP" ~ "PRIMARY" ~ "KEY" ~ index_identifier? }
+alter_drop_foreign_key = { "ALTER" ~ "TABLE" ~ identifier ~ "DROP" ~ "FOREIGN" ~ "KEY" ~ index_identifier? }
+alter_add_primary_key = { "ALTER" ~ "TABLE" ~ identifier ~ "ADD" ~ constraint_clause? ~ "PRIMARY" ~ "KEY" ~ "(" ~ identifiers ~ ")" }
+alter_add_foreign_key = { "ALTER" ~ "TABLE" ~ identifier ~ "ADD" ~ constraint_clause? ~ "FOREIGN" ~ "KEY" ~ "(" ~ identifiers ~ ")" ~ "REFERENCES" ~ references_clause }
+alter_add_unique = { "ALTER" ~ "TABLE" ~ identifier ~ "ADD" ~ "UNIQUE" ~ index_identifier? ~ "(" ~ identifiers ~ ")" }
+
+index_identifier = { identifier }
+constraint_clause = { "CONSTRAINT" ~ identifier? }
+
+field_list = { field ~ ("," ~ field)* }
+field = { field_def | primary_key | foreign_key }
+field_def = { identifier ~ typ ~ not_null_clause? ~ ("DEFAULT" ~ value)? }
+primary_key = { "PRIMARY" ~ "KEY" ~ (identifier)? ~ "(" ~ identifiers ~ ")" }
+foreign_key = { "FOREIGN" ~ "KEY" ~ (identifier)? ~ "(" ~ identifiers ~ ")" ~ "REFERENCES" ~ references_clause }
+
+references_clause = { identifier ~ "(" ~ identifiers ~ ")" }
+
+typ = { int_t | float_t | varchar_t }
+int_t = { "INT" }
+float_t = { "FLOAT" }
+varchar_t = { "VARCHAR" ~ "(" ~ integer ~ ")" }
+
+order = { asc | desc }
+asc = { "ASC" }
+desc = { "DESC" }
+
+value_lists = { value_list ~ ("," ~ value_list)* }
+value_list = { "(" ~ value ~ ("," ~ value)* ~ ")" }
+value = { integer | float | string | null }
+
+where_and_clause = { where_clause ~ ("AND" ~ where_clause)* }
+where_clause = {
+    where_operator_expression |
+    where_operator_select |
+    where_null |
+    where_in_list |
+    where_in_select |
+    where_like_string 
+}
+where_operator_expression = { column ~ operator ~ expression }
+where_operator_select = { column ~ operator ~ "(" ~ select_statement ~ ")" }
+where_null = { column ~ "IS" ~ (null_clause | not_null_clause) }
+where_in_list = { column ~ "IN" ~ value_list }
+where_in_select = { column ~ "IN" ~ "(" ~ select_statement ~ ")" }
+where_like_string = { column ~ "LIKE" ~ string }
+
+expression = { value | column }
+
+null_clause = { null }
+not_null_clause = { "NOT" ~ null }
+
+column = { table_part? ~ column_part }
+table_part = { identifier ~ "." }
+column_part = { identifier }
+
+group_by_clause = { column }
+
+order_by_clause = { column ~ order? }
+
+limit_clause = { integer ~ ("OFFSET" ~ offset_clause)? }
+offset_clause = { integer }
+
+set_clause = { set_pair ~ ("," ~ set_pair)* }
+set_pair = { identifier ~ equal_or_assign ~ value }
+
+selectors = { selector_any | selector_list }
+selector_any = { "*" }
+selector_list = { selector ~ ("," ~ selector)* }
+
+selector = { column | arrgegate_clause | count_clause }
+arrgegate_clause = { aggregator ~ "(" ~ column ~ ")" }
+count_clause = { count ~ "(" ~ "*" ~ ")" }
+
+identifiers = { identifier ~ ("," ~ identifier)* }
+
+operator = { equal_or_assign | less_equal | greater_equal | less | greater | not_equal }
+
+aggregator = { count | average | max | min | sum }
