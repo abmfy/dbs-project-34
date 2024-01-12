@@ -22,6 +22,10 @@ pub struct Config {
     #[clap(short, long)]
     pub database: Option<String>,
 
+    /// Initialize the database.
+    #[clap(short, long)]
+    pub init: bool,
+
     /// Specify path to data directory.
     #[clap(short, long, default_value = "data")]
     pub path: PathBuf,

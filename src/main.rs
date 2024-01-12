@@ -111,6 +111,15 @@ fn main() -> Result<()> {
     setup::init_logging();
     let config = setup::init_config();
 
+    // Remove the database directory if it exists.
+    if config.init {
+        if config.path.exists() {
+            log::info!("Removing database directory");
+            std::fs::remove_dir_all(&config.path)?;
+        }
+        return Ok(())
+    }
+
     let mut system = system::System::new(config.path.clone());
     if let Some(db) = config.database {
         system.use_database(&db)?;
