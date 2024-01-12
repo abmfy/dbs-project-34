@@ -153,6 +153,25 @@ impl System {
         Ok(ret)
     }
 
+    /// Get the schema of a table.
+    pub fn get_table_schema(&mut self, name: &str) -> Result<Schema> {
+        log::info!("Getting schema of table {}", name);
+
+        let db = self.db.as_ref().ok_or(Error::NoDatabaseSelected)?;
+        let table = db.join(name);
+
+        if !table.exists() {
+            log::error!("Table {} not found", name);
+            return Err(Error::TableNotFound(name.to_owned()));
+        }
+
+        let meta = table.join("meta.json");
+        let file = fs::File::open(meta)?;
+        let schema = serde_json::from_reader(file)?;
+
+        Ok(schema)
+    }
+
     /// Create a table.
     pub fn create_table(&mut self, name: &str, schema: Schema) -> Result<()> {
         log::info!("Creating table {}", name);

@@ -162,6 +162,7 @@ fn parse_table_statement(
     match pair.as_rule() {
         Rule::create_table_statement => parse_create_table_statement(system, pair.into_inner()),
         Rule::drop_table_statement => parse_drop_table_statement(system, pair.into_inner()),
+        Rule::desc_statement => parse_desc_statement(system, pair.into_inner()),
         _ => unimplemented!(),
     }
 }
@@ -298,4 +299,34 @@ fn parse_drop_table_statement(
     system.drop_table(name)?;
 
     Ok((fresh_table(), QueryStat::Update(0)))
+}
+
+fn parse_desc_statement(
+    system: &mut System,
+    statement: Pairs<Rule>,
+) -> Result<(Table, QueryStat)> {
+    log::info!("Parsing desc statement: {statement:?}");
+
+    let name = statement.into_iter().next().unwrap().as_str();
+
+    let schema = system.get_table_schema(name)?;
+
+    let mut ret = fresh_table();
+    ret.set_titles(row!["Field", "Type", "Null", "Default"]);
+
+    schema.columns.iter().for_each(|column| {
+        let default = match &column.default {
+            Some(value) => value.to_string(),
+            None => "NULL".to_string(),
+        };
+        let nullable = if column.nullable { "YES" } else { "NO" };
+        ret.add_row(row![
+            column.name,
+            column.typ,
+            nullable,
+            default,
+        ]);
+    });
+
+    Ok((ret, QueryStat::Query(schema.columns.len())))
 }
