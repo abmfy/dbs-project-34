@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use crate::error::{Error, Result};
 use crate::file::PageCache;
+use crate::schema::Schema;
 
 /// Database system manager.
 pub struct System {
@@ -129,6 +130,64 @@ impl System {
         }
 
         log::info!("Database {} dropped", name);
+        Ok(())
+    }
+
+    /// Get a list of tables in current database.
+    pub fn get_tables(&self) -> Result<Vec<String>> {
+        let db = self.db.as_ref().ok_or(Error::NoDatabaseSelected)?;
+        let mut ret = Vec::new();
+        for entry in fs::read_dir(db)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                ret.push(
+                    path.file_name()
+                        .expect("Unexpected table name")
+                        .to_str()
+                        .expect("Unexpected table name")
+                        .to_owned(),
+                );
+            }
+        }
+        Ok(ret)
+    }
+
+    /// Create a table.
+    pub fn create_table(&mut self, name: &str, schema: Schema) -> Result<()> {
+        log::info!("Creating table {}", name);
+
+        let db = self.db.as_ref().ok_or(Error::NoDatabaseSelected)?;
+        let table = db.join(name);
+
+        if table.exists() {
+            log::error!("Table {} already exists", name);
+            return Err(Error::TableExists(name.to_owned()));
+        }
+
+        fs::create_dir(table.clone())?;
+
+        let meta = table.join("meta.json");
+        let mut file = fs::File::create(meta)?;
+        serde_json::to_writer(&mut file, &schema)?;
+
+        Ok(())
+    }
+
+    /// Drop a table.
+    pub fn drop_table(&mut self, name: &str) -> Result<()> {
+        log::info!("Dropping table {}", name);
+
+        let db = self.db.as_ref().ok_or(Error::NoDatabaseSelected)?;
+        let table = db.join(name);
+
+        if !table.exists() {
+            log::error!("Table {} not found", name);
+            return Err(Error::TableNotFound(name.to_owned()));
+        }
+
+        fs::remove_dir_all(table)?;
+
         Ok(())
     }
 }

@@ -1,14 +1,17 @@
 //! Error definitions.
 
 use std::io::Error as IOError;
+use std::num::{ParseFloatError, ParseIntError};
 use std::result;
 
 use csv::Error as CsvError;
 use pest::error::Error as PestError;
 use rustyline::error::ReadlineError;
+use serde_json::error::Error as SerdeError;
 use thiserror::Error;
 
 use crate::parser::Rule;
+use crate::schema::{Value, Type};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -16,13 +19,29 @@ pub enum Error {
     DatabaseExists(String),
     #[error("Database `{0}` not found")]
     DatabaseNotFound(String),
+    #[error("No database selected")]
+    NoDatabaseSelected,
+
+    #[error("Table `{0}` already exists")]
+    TableExists(String),
+    #[error("Table `{0}` not found")]
+    TableNotFound(String),
+
+    #[error("Value `{0}` does not match type `{1}`")]
+    TypeMismatch(Value, Type),
 
     #[error("CSV error: {0}")]
     Csv(#[from] CsvError),
     #[error("IO error: {0}")]
     IO(#[from] IOError),
+    #[error("Float parse error: {0}")]
+    ParseFloat(#[from] ParseFloatError),
+    #[error("Int parse error: {0}")]
+    ParseInt(#[from] ParseIntError),
     #[error("Readline error: {0}")]
     Readline(#[from] ReadlineError),
+    #[error("Serialization error: {0}")]
+    Serde(#[from] SerdeError),
     #[error("Syntax error:\n{0}")]
     Syntax(#[from] Box<PestError<Rule>>),
 }

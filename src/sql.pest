@@ -94,7 +94,7 @@ index_identifier = { identifier }
 constraint_clause = { "CONSTRAINT" ~ identifier? }
 
 field_list = { field ~ ("," ~ field)* }
-field = { field_def | primary_key | foreign_key }
+field = _{ field_def | primary_key | foreign_key }
 field_def = { identifier ~ typ ~ not_null_clause? ~ ("DEFAULT" ~ value)? }
 primary_key = { "PRIMARY" ~ "KEY" ~ (identifier)? ~ "(" ~ identifiers ~ ")" }
 foreign_key = { "FOREIGN" ~ "KEY" ~ (identifier)? ~ "(" ~ identifiers ~ ")" ~ "REFERENCES" ~ references_clause }
@@ -112,7 +112,7 @@ desc = { "DESC" }
 
 value_lists = { value_list ~ ("," ~ value_list)* }
 value_list = { "(" ~ value ~ ("," ~ value)* ~ ")" }
-value = { integer | float | string | null }
+value = { float | integer | string | null }
 
 where_and_clause = { where_clause ~ ("AND" ~ where_clause)* }
 where_clause = {

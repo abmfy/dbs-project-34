@@ -1,8 +1,10 @@
 //! Table schema.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::{Display, Formatter, self}};
 
 use serde::{Deserialize, Serialize};
+
+use crate::error::{Error, Result};
 
 /// A type of a column.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -23,12 +25,47 @@ impl Type {
     }
 }
 
+impl Display for Type {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Type::Int => write!(f, "INT"),
+            Type::Float => write!(f, "FLOAT"),
+            Type::Varchar(len) => write!(f, "VARCHAR({})", len),
+        }
+    }
+}
+
 /// A value of a column.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum Value {
+    Null,
     Int(i32),
     Float(f64),
     Varchar(String),
+}
+
+impl Value {
+    /// Check if the value matches the type.
+    pub fn check_type(&self, typ: &Type) -> bool {
+        match (self, typ) {
+            (Value::Null, _) => true,
+            (Value::Int(_), Type::Int) => true,
+            (Value::Float(_), Type::Float) => true,
+            (Value::Varchar(_), Type::Varchar(_)) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Display for Value {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::Null => write!(f, "NULL"),
+            Value::Int(v) => write!(f, "{v}"),
+            Value::Float(v) => write!(f, "{v}"),
+            Value::Varchar(v) => write!(f, "{v}"),
+        }
+    }
 }
 
 /// A column in a table.
@@ -38,6 +75,23 @@ pub struct Column {
     pub typ: Type,
     pub nullable: bool,
     pub default: Option<Value>,
+}
+
+impl Column {
+    pub fn new(name: String, typ: Type, nullable: bool, default: Option<Value>) -> Result<Self> {
+        if let Some(value) = &default {
+            if !value.check_type(&typ) {
+                return Err(Error::TypeMismatch(value.clone(), typ));
+            }
+        }
+
+        Ok(Self {
+            name,
+            typ,
+            nullable,
+            default,
+        })
+    }
 }
 
 /// A table schema. This type is for serialization.

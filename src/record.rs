@@ -8,7 +8,7 @@ use crate::schema::{TableSchema, Type, Value};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record {
-    fields: Vec<Option<Value>>,
+    fields: Vec<Value>,
 }
 
 impl Record {
@@ -21,7 +21,7 @@ impl Record {
         for (i, column) in schema.get_columns().iter().enumerate() {
             // Null field
             if nulls.contains(i) {
-                fields.push(None);
+                fields.push(Value::Null);
                 offset += column.typ.size();
                 continue;
             }
@@ -36,7 +36,7 @@ impl Record {
                 }
             };
 
-            fields.push(Some(value));
+            fields.push(value);
             offset += column.typ.size();
         }
         Ok(Self { fields })
@@ -50,15 +50,12 @@ impl Record {
         let mut nulls = BitSet::new();
 
         for (i, field) in self.fields.iter().enumerate() {
-            if field.is_none() {
-                nulls.insert(i);
-                offset += schema.get_columns()[i].typ.size();
-                continue;
-            }
-
-            let value = field.as_ref().unwrap();
+            let value = field;
             let value_buf = &mut buf[offset..offset + schema.get_columns()[i].typ.size()];
             match value {
+                Value::Null => {
+                    nulls.insert(i);
+                }
                 Value::Int(v) => {
                     value_buf.copy_from_slice(&v.to_le_bytes());
                 }
@@ -122,9 +119,9 @@ mod tests {
         let mut buf = [0u8; PAGE_SIZE];
         let record = Record {
             fields: vec![
-                Some(Value::Int(1)),
-                Some(Value::Varchar("Alice".to_string())),
-                Some(Value::Float(100.0)),
+                Value::Int(1),
+                Value::Varchar("Alice".to_string()),
+                Value::Float(100.0),
             ],
         };
         record.save_into(&mut buf, 0, &schema).unwrap();
@@ -135,19 +132,19 @@ mod tests {
 
         log::info!("Test deserializing. Record: {:?}", record);
 
-        assert_eq!(record.fields[0].as_ref().unwrap(), &Value::Int(1));
+        assert_eq!(record.fields[0], Value::Int(1));
         let name = "Alice";
-        match &record.fields[1].as_ref().unwrap() {
+        match &record.fields[1] {
             Value::Varchar(s) => assert_eq!(&s[..name.len()], name),
             _ => panic!("Wrong type"),
         }
-        assert_eq!(record.fields[2].as_ref().unwrap(), &Value::Float(100.0));
+        assert_eq!(record.fields[2], Value::Float(100.0));
 
         let mut record = Record {
             fields: vec![
-                Some(Value::Int(2)),
-                Some(Value::Varchar("Bob".to_string())),
-                None,
+                Value::Int(2),
+                Value::Varchar("Bob".to_string()),
+                Value::Null,
             ],
         };
         record.save_into(&mut buf, 0, &schema).unwrap();
@@ -158,13 +155,13 @@ mod tests {
 
         log::info!("Test deserializing. Record: {:?}", record);
 
-        assert_eq!(record.fields[0].as_ref().unwrap(), &Value::Int(2));
+        assert_eq!(record.fields[0], Value::Int(2));
         let name: &str = "Bob";
-        match &record.fields[1].as_ref().unwrap() {
+        match &record.fields[1] {
             Value::Varchar(s) => assert_eq!(&s[..name.len()], name),
             _ => panic!("Wrong type"),
         }
-        assert_eq!(record.fields[2].as_ref(), None);
+        assert_eq!(record.fields[2], Value::Null);
     }
 
     #[test]
@@ -233,15 +230,15 @@ mod tests {
         let mut buf = [0u8; PAGE_SIZE];
         let record = Record {
             fields: vec![
-                Some(Value::Int(123)),
-                None,
-                Some(Value::Int(123)),
-                None,
-                Some(Value::Int(123)),
-                None,
-                Some(Value::Int(123)),
-                None,
-                None,
+                Value::Int(123),
+                Value::Null,
+                Value::Int(123),
+                Value::Null,
+                Value::Int(123),
+                Value::Null,
+                Value::Int(123),
+                Value::Null,
+                Value::Null,
             ],
         };
 
@@ -253,14 +250,14 @@ mod tests {
 
         log::info!("Test deserializing. Record: {:?}", record);
 
-        assert_eq!(record.fields[0].as_ref().unwrap(), &Value::Int(123));
-        assert_eq!(record.fields[1].as_ref(), None);
-        assert_eq!(record.fields[2].as_ref().unwrap(), &Value::Int(123));
-        assert_eq!(record.fields[3].as_ref(), None);
-        assert_eq!(record.fields[4].as_ref().unwrap(), &Value::Int(123));
-        assert_eq!(record.fields[5].as_ref(), None);
-        assert_eq!(record.fields[6].as_ref().unwrap(), &Value::Int(123));
-        assert_eq!(record.fields[7].as_ref(), None);
-        assert_eq!(record.fields[8].as_ref(), None);
+        assert_eq!(record.fields[0], Value::Int(123));
+        assert_eq!(record.fields[1], Value::Null);
+        assert_eq!(record.fields[2], Value::Int(123));
+        assert_eq!(record.fields[3], Value::Null);
+        assert_eq!(record.fields[4], Value::Int(123));
+        assert_eq!(record.fields[5], Value::Null);
+        assert_eq!(record.fields[6], Value::Int(123));
+        assert_eq!(record.fields[7], Value::Null);
+        assert_eq!(record.fields[8], Value::Null);
     }
 }
