@@ -9,6 +9,8 @@ pub const CACHE_SIZE: usize = 16384;
 /// Size of a link in a linked list.
 pub const LINK_SIZE: usize = 4;
 
+pub const SHELL_HISTORY: &str = ".yoursql_history";
+
 /// Command line arguments.
 #[derive(Parser, Debug)]
 #[clap(

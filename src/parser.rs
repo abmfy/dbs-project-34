@@ -8,11 +8,14 @@ use pest::{
     Parser,
 };
 use pest_derive::Parser;
-use prettytable::{format::consts::FORMAT_NO_LINESEP_WITH_TITLE, row, Table};
+use prettytable::{format::consts::FORMAT_NO_LINESEP_WITH_TITLE, row, Row, Table};
 
 use crate::{
     error::{Error, Result},
-    schema::{Column, Constraint, Field, Schema, Type, Value},
+    schema::{
+        Column, ColumnSelector, Constraint, Expression, Field, Operator, Schema, Selector,
+        Selectors, Type, Value, WhereClause,
+    },
     stat::QueryStat,
     system::System,
 };
@@ -65,6 +68,21 @@ pub fn parse<'a>(
 
     // Empty statement
     ret
+}
+
+fn parse_identifiers(pairs: Pairs<Rule>) -> Result<Vec<&str>> {
+    let mut ret = vec![];
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::identifier => {
+                ret.push(pair.as_str());
+            }
+            _ => continue,
+        }
+    }
+
+    Ok(ret)
 }
 
 fn parse_db_statement(system: &mut System, statement: Pairs<Rule>) -> Result<(Table, QueryStat)> {
@@ -166,26 +184,19 @@ fn parse_table_statement(
         Rule::drop_table_statement => parse_drop_table_statement(system, pair.into_inner()),
         Rule::desc_statement => parse_desc_statement(system, pair.into_inner()),
         Rule::load_statement => parse_load_statement(system, pair.into_inner()),
+        Rule::select_statement => parse_select_statement(system, pair.into_inner()),
         _ => unimplemented!(),
     }
 }
 
 fn parse_value(value: Pair<Rule>) -> Result<Value> {
-    let ret;
-
-    match value.as_rule() {
-        Rule::integer => {
-            ret = Value::Int(value.as_str().parse()?);
-        }
-        Rule::float => {
-            ret = Value::Float(value.as_str().parse()?);
-        }
-        Rule::string => {
-            ret = Value::Varchar(value.into_inner().next().unwrap().as_str().to_owned());
-        }
-        Rule::null => ret = Value::Null,
+    let ret = match value.as_rule() {
+        Rule::integer => Value::Int(value.as_str().parse()?),
+        Rule::float => Value::Float(value.as_str().parse()?),
+        Rule::string => Value::Varchar(value.into_inner().next().unwrap().as_str().to_owned()),
+        Rule::null => Value::Null,
         _ => panic!("Invalid value: {value:?}"),
-    }
+    };
 
     Ok(ret)
 }
@@ -380,12 +391,9 @@ fn parse_create_table_statement(
         .into_iter()
         .map(|field| match field {
             Field::Constraint(constraint) => {
-                match &constraint {
-                    Constraint::PrimaryKey { columns, .. } => {
-                        primary_key_count += 1;
-                        primary_key_columns.extend(columns.clone());
-                    }
-                    _ => {}
+                if let Constraint::PrimaryKey { columns, .. } = &constraint {
+                    primary_key_count += 1;
+                    primary_key_columns.extend(columns.clone());
                 }
                 constraint
             }
@@ -502,4 +510,254 @@ fn parse_load_statement(system: &mut System, statement: Pairs<Rule>) -> Result<(
     ret.add_row(row![rows]);
 
     Ok((ret, QueryStat::Update(rows)))
+}
+
+fn parse_column_selector(pairs: Pairs<Rule>) -> Result<ColumnSelector> {
+    let mut table = None;
+    let mut column = None;
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::table_part => {
+                for pair in pair.into_inner() {
+                    match pair.as_rule() {
+                        Rule::identifier => {
+                            table = Some(pair.as_str());
+                        }
+                        _ => continue,
+                    }
+                }
+            }
+            Rule::column_part => {
+                for pair in pair.into_inner() {
+                    match pair.as_rule() {
+                        Rule::identifier => {
+                            column = Some(pair.as_str());
+                        }
+                        _ => continue,
+                    }
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    let column = column.unwrap();
+
+    Ok(ColumnSelector(
+        table.map(|s| s.to_owned()),
+        column.to_owned(),
+    ))
+}
+
+fn parse_selector(pairs: Pairs<Rule>) -> Result<Selector> {
+    let mut ret = None;
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::column => {
+                ret = Some(Selector::Column(parse_column_selector(pair.into_inner())?));
+            }
+            _ => continue,
+        }
+    }
+
+    Ok(ret.unwrap())
+}
+
+fn parse_selectors(pairs: Pair<Rule>) -> Result<Selectors> {
+    let mut ret = None;
+
+    for pair in pairs.into_inner() {
+        match pair.as_rule() {
+            Rule::selector_any => {
+                ret = Some(Selectors::All);
+            }
+            Rule::selector_list => {
+                let mut selectors = vec![];
+                for pair in pair.into_inner() {
+                    match pair.as_rule() {
+                        Rule::selector => {
+                            selectors.push(parse_selector(pair.into_inner())?);
+                        }
+                        _ => continue,
+                    }
+                }
+                ret = Some(Selectors::Some(selectors));
+            }
+            _ => continue,
+        }
+    }
+
+    Ok(ret.unwrap())
+}
+
+fn parse_operator(pairs: Pairs<Rule>) -> Result<Operator> {
+    let mut ret = None;
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::equal_or_assign => {
+                ret = Some(Operator::Eq);
+            }
+            Rule::not_equal => {
+                ret = Some(Operator::Ne);
+            }
+            Rule::less => {
+                ret = Some(Operator::Lt);
+            }
+            Rule::less_equal => {
+                ret = Some(Operator::Le);
+            }
+            Rule::greater => {
+                ret = Some(Operator::Gt);
+            }
+            Rule::greater_equal => {
+                ret = Some(Operator::Ge);
+            }
+            _ => continue,
+        }
+    }
+
+    Ok(ret.unwrap())
+}
+
+fn parse_expression(pairs: Pairs<Rule>) -> Result<Expression> {
+    let mut ret = None;
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::value => {
+                ret = Some(Expression::Value(parse_value(
+                    pair.into_inner().next().unwrap(),
+                )?));
+            }
+            Rule::column => {
+                ret = Some(Expression::Column(parse_column_selector(
+                    pair.into_inner(),
+                )?));
+            }
+            _ => continue,
+        }
+    }
+
+    Ok(ret.unwrap())
+}
+
+fn parse_where_operator_expression(pairs: Pairs<Rule>) -> Result<WhereClause> {
+    let mut column = None;
+    let mut operator = None;
+    let mut expression = None;
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::column => {
+                column = Some(parse_column_selector(pair.into_inner())?);
+            }
+            Rule::operator => {
+                operator = Some(parse_operator(pair.into_inner())?);
+            }
+            Rule::expression => {
+                expression = Some(parse_expression(pair.into_inner())?);
+            }
+            _ => continue,
+        }
+    }
+
+    let column = column.unwrap();
+    let operator = operator.unwrap();
+    let expression = expression.unwrap();
+
+    Ok(WhereClause::OperatorExpression(
+        column, operator, expression,
+    ))
+}
+
+fn parse_where_clause(pairs: Pairs<Rule>) -> Result<WhereClause> {
+    let mut ret = None;
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::where_operator_expression => {
+                ret = Some(parse_where_operator_expression(pair.into_inner())?);
+            }
+            _ => continue,
+        }
+    }
+
+    Ok(ret.unwrap())
+}
+
+fn parse_where_and_clause(pairs: Pairs<Rule>) -> Result<Vec<WhereClause>> {
+    let mut ret = vec![];
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::where_clause => {
+                ret.push(parse_where_clause(pair.into_inner())?);
+            }
+            _ => continue,
+        }
+    }
+
+    Ok(ret)
+}
+
+fn parse_select_statement(
+    system: &mut System,
+    statement: Pairs<Rule>,
+) -> Result<(Table, QueryStat)> {
+    log::info!("Parsing select statement: {statement:?}");
+
+    let mut selectors = None;
+    let mut tables = None;
+    let mut where_clauses = vec![];
+
+    for pair in statement {
+        match pair.as_rule() {
+            Rule::selectors => {
+                selectors = Some(parse_selectors(pair)?);
+            }
+            Rule::identifiers => {
+                tables = Some(parse_identifiers(pair.into_inner())?);
+            }
+            Rule::where_and_clause => {
+                where_clauses = parse_where_and_clause(pair.into_inner())?;
+            }
+            _ => continue,
+        }
+    }
+
+    let selectors = selectors.unwrap();
+    let tables = tables.unwrap();
+
+    let schema = system.get_table_schema(tables[0])?;
+
+    let mut ret = fresh_table();
+
+    // Set title
+    let columns: Vec<String> = match &selectors {
+        Selectors::All => schema
+            .get_columns()
+            .iter()
+            .map(|column| column.name.clone())
+            .collect(),
+        Selectors::Some(selectors) => selectors.iter().map(|s| s.to_string()).collect(),
+    };
+
+    ret.set_titles(Row::from(columns));
+
+    let results = system.select(&selectors, &tables, &where_clauses)?;
+    let len = results.len();
+
+    for record in results {
+        let row: Row = record
+            .fields
+            .into_iter()
+            .map(|value| value.to_string())
+            .collect();
+        ret.add_row(row);
+    }
+
+    Ok((ret, QueryStat::Query(len)))
 }

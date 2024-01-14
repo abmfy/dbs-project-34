@@ -14,12 +14,13 @@ use std::time::Instant;
 
 use rustyline::{config::Configurer, error::ReadlineError, DefaultEditor};
 
+use config::SHELL_HISTORY;
 use error::Result;
 use file::FS;
 use parser::parse;
 use system::System;
 
-use crate::{schema::Constraint, stat::QueryStat};
+use crate::stat::QueryStat;
 
 /// Write back page cache and shutdown.
 fn exit() -> Result<()> {
@@ -50,15 +51,11 @@ fn batch_main(mut system: System) -> Result<()> {
             match result {
                 Ok((table, stat)) => {
                     table.to_csv(io::stdout())?;
-
-                    match stat {
-                        QueryStat::Desc(constraints) => {
-                            println!();
-                            for constraint in constraints {
-                                println!("{constraint}");
-                            }
+                    if let QueryStat::Desc(constraints) = stat {
+                        println!();
+                        for constraint in constraints {
+                            println!("{constraint}");
                         }
-                        _ => {}
                     }
                 }
                 Err(err) => {
@@ -76,6 +73,7 @@ fn batch_main(mut system: System) -> Result<()> {
 fn shell_main(mut system: System) -> Result<()> {
     let mut rl = DefaultEditor::new()?;
     rl.set_auto_add_history(true);
+    rl.load_history(SHELL_HISTORY).ok();
 
     println!("{}", console::style("Welcome to YourSQL!").green().bold());
 
@@ -162,6 +160,8 @@ fn shell_main(mut system: System) -> Result<()> {
             }
         }
     }
+
+    rl.save_history(SHELL_HISTORY)?;
 
     exit()
 }

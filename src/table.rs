@@ -7,7 +7,7 @@ use crate::config::LINK_SIZE;
 use crate::error::Result;
 use crate::file::PageCache;
 use crate::record::Record;
-use crate::schema::TableSchema;
+use crate::schema::{Selectors, TableSchema, WhereClause};
 
 /// A table.
 pub struct Table {
@@ -15,23 +15,12 @@ pub struct Table {
     fd: Uuid,
     /// The table's schema.
     schema: TableSchema,
-    /// Maximum number of records in the page.
-    max_records: usize,
-    /// The size of the free slot bitmap.
-    free_bitmap_size: usize,
 }
 
 impl Table {
     /// Create a new table.
     pub fn new(fd: Uuid, schema: TableSchema) -> Self {
-        let max_records = schema.get_max_records();
-        let free_bitmap_size = schema.get_free_bitmap_size();
-        Self {
-            fd,
-            schema,
-            max_records,
-            free_bitmap_size,
-        }
+        Self { fd, schema }
     }
 
     /// Get the file descriptor of the table.
@@ -45,14 +34,13 @@ impl Table {
     }
 
     /// Allocate a new page.
-    pub fn new_page<'a>(&'a mut self, fs: &'a mut PageCache) -> Result<TablePage> {
+    pub fn new_page<'a>(&'a mut self, fs: &'a mut PageCache) -> Result<TablePageMut> {
         let page_id = self.schema.new_page()?;
         log::debug!("Allocating new page {page_id}");
 
         if let Some(next_page_id) = self.schema.get_free() {
             let next_page_buf = fs.get_mut(self.fd, next_page_id)?;
-            let mut next_page =
-                TablePage::new(self, next_page_buf, self.max_records, self.free_bitmap_size);
+            let mut next_page = TablePageMut::new(self, next_page_buf);
             next_page.set_prev(Some(page_id));
         }
 
@@ -60,7 +48,7 @@ impl Table {
         self.schema.set_free(Some(page_id));
 
         let page_buf = fs.get_mut(self.fd, page_id)?;
-        let mut page = TablePage::new(self, page_buf, self.max_records, self.free_bitmap_size);
+        let mut page = TablePageMut::new(self, page_buf);
         page.set_next(free);
 
         Ok(page)
@@ -75,7 +63,7 @@ impl Table {
         log::debug!("Taking page {page_id} off the linked list");
 
         let page_buf = fs.get_mut(self.fd, page_id)?;
-        let page = TablePage::new(self, page_buf, self.max_records, self.free_bitmap_size);
+        let page = TablePage::new(self, page_buf);
 
         let prev = page.get_prev();
         let next = page.get_next();
@@ -83,16 +71,14 @@ impl Table {
         drop(page);
 
         if let Some(prev_page_id) = prev {
-            let prev_page_buf = fs.get_mut(self.fd, prev_page_id as usize)?;
-            let mut prev_page =
-                TablePage::new(self, prev_page_buf, self.max_records, self.free_bitmap_size);
+            let prev_page_buf = fs.get_mut(self.fd, prev_page_id)?;
+            let mut prev_page = TablePageMut::new(self, prev_page_buf);
             prev_page.set_next(next);
         }
 
         if let Some(next_page_id) = next {
-            let next_page_buf = fs.get_mut(self.fd, next_page_id as usize)?;
-            let mut next_page =
-                TablePage::new(self, next_page_buf, self.max_records, self.free_bitmap_size);
+            let next_page_buf = fs.get_mut(self.fd, next_page_id)?;
+            let mut next_page = TablePageMut::new(self, next_page_buf);
             next_page.set_prev(prev);
         }
 
@@ -112,14 +98,13 @@ impl Table {
         let free = self.schema.get_free();
 
         if let Some(free_page_id) = free {
-            let free_page_buf = fs.get_mut(self.fd, free_page_id as usize)?;
-            let mut free_page =
-                TablePage::new(self, free_page_buf, self.max_records, self.free_bitmap_size);
+            let free_page_buf = fs.get_mut(self.fd, free_page_id)?;
+            let mut free_page = TablePageMut::new(self, free_page_buf);
             free_page.set_prev(Some(page_id));
         }
 
         let page_buf = fs.get_mut(self.fd, page_id)?;
-        let mut page = TablePage::new(self, page_buf, self.max_records, self.free_bitmap_size);
+        let mut page = TablePageMut::new(self, page_buf);
 
         page.set_prev(None);
         page.set_next(free);
@@ -142,14 +127,13 @@ impl Table {
         let full = self.schema.get_full();
 
         if let Some(full_page_id) = full {
-            let full_page_buf = fs.get_mut(self.fd, full_page_id as usize)?;
-            let mut full_page =
-                TablePage::new(self, full_page_buf, self.max_records, self.free_bitmap_size);
+            let full_page_buf = fs.get_mut(self.fd, full_page_id)?;
+            let mut full_page = TablePageMut::new(self, full_page_buf);
             full_page.set_prev(Some(page_id));
         }
 
         let page_buf = fs.get_mut(self.fd, page_id)?;
-        let mut page = TablePage::new(self, page_buf, self.max_records, self.free_bitmap_size);
+        let mut page = TablePageMut::new(self, page_buf);
 
         page.set_prev(None);
         page.set_next(full);
@@ -157,6 +141,32 @@ impl Table {
         self.schema.set_full(Some(page_id));
 
         Ok(())
+    }
+
+    /// Select from table using selector.
+    pub fn select(
+        &self,
+        fs: &mut PageCache,
+        selector: &Selectors,
+        where_clauses: &[WhereClause],
+    ) -> Result<Vec<Record>> {
+        let mut records = Vec::new();
+
+        for page_id in 0..self.schema.get_pages() {
+            let page_buf = fs.get(self.fd, page_id)?;
+            let page = TablePage::new(self, page_buf);
+
+            for record in &page {
+                if where_clauses
+                    .iter()
+                    .all(|clause| clause.matches(&record, &self.schema))
+                {
+                    records.push(record.select(selector, &self.schema));
+                }
+            }
+        }
+
+        Ok(records)
     }
 
     /// Insert a record into the table.
@@ -170,7 +180,7 @@ impl Table {
 
         let page_id = self.schema.get_free().expect("No free page");
         let page_buf = fs.get_mut(self.fd, page_id)?;
-        let mut page = TablePage::new(self, page_buf, self.max_records, self.free_bitmap_size);
+        let mut page = TablePageMut::new(self, page_buf);
 
         if !page.insert(record, &self.schema) {
             log::debug!("A page is filled");
@@ -181,12 +191,131 @@ impl Table {
     }
 }
 
-/// A page in a table.
+/// Common behaviors between TablePage and TablePageMut.
+/// For code reuse.
+pub trait LinkedPage<'a> {
+    /// Get the table.
+    fn get_table(&self) -> &'a Table;
+
+    /// Get the buffer.
+    fn get_buf(&self) -> &[u8];
+
+    /// Get the size of a record.
+    fn get_record_size(&self) -> usize;
+
+    /// Get the maximum number of records in the page.
+    fn get_max_records(&self) -> usize;
+
+    /// Get the size of the free slot bitmap.
+    fn get_free_bitmap_size(&self) -> usize;
+
+    /// Get the occupied slots.
+    fn get_occupied(&self) -> &BitSet;
+
+    /// Get an iterator over records in the page.
+    fn iter(&'a self) -> PageIterator<'a, Self>
+    where
+        Self: Sized,
+    {
+        PageIterator::new(self)
+    }
+
+    /// Get the previous page number.
+    fn get_prev(&self) -> Option<usize> {
+        let prev = &self.get_buf()[..LINK_SIZE];
+        let prev = u32::from_le_bytes(prev.try_into().unwrap());
+        if prev == 0 {
+            None
+        } else {
+            Some((prev - 1) as usize)
+        }
+    }
+
+    /// Get the next page number.
+    fn get_next(&self) -> Option<usize> {
+        let next = &self.get_buf()[LINK_SIZE..2 * LINK_SIZE];
+        let next = u32::from_le_bytes(next.try_into().unwrap());
+        if next == 0 {
+            None
+        } else {
+            Some((next - 1) as usize)
+        }
+    }
+
+    /// Check if the i-th slot is free.
+    fn is_free(&self, i: usize) -> bool {
+        !self.get_occupied().contains(i)
+    }
+}
+
+/// A read-only page in a table.
 pub struct TablePage<'a> {
     /// The table the page belongs to.
     table: &'a Table,
     /// The buffer of the page.
+    buf: &'a [u8],
+    /// The size of a record.
+    record_size: usize,
+    /// Maximum number of records in the page.
+    max_records: usize,
+    /// The size of the free slot bitmap.
+    free_bitmap_size: usize,
+    /// Free slot bitmap.
+    occupied: BitSet,
+}
+
+impl<'a> TablePage<'a> {
+    /// Create a new page object representing a page in a buffer.
+    pub fn new(table: &'a Table, buf: &'a [u8]) -> Self {
+        let record_size = table.schema.get_record_size();
+        let max_records = table.schema.get_max_records();
+        let free_bitmap_size = table.schema.get_free_bitmap_size();
+        let occupied = BitSet::from_bytes(&buf[2 * LINK_SIZE..2 * LINK_SIZE + free_bitmap_size]);
+        Self {
+            table,
+            buf,
+            record_size,
+            max_records,
+            free_bitmap_size,
+            occupied,
+        }
+    }
+}
+
+impl<'a> LinkedPage<'a> for TablePage<'a> {
+    fn get_table(&self) -> &'a Table {
+        self.table
+    }
+
+    fn get_buf(&self) -> &[u8] {
+        self.buf
+    }
+
+    fn get_record_size(&self) -> usize {
+        self.record_size
+    }
+
+    fn get_max_records(&self) -> usize {
+        self.max_records
+    }
+
+    fn get_free_bitmap_size(&self) -> usize {
+        self.free_bitmap_size
+    }
+
+    fn get_occupied(&self) -> &BitSet {
+        &self.occupied
+    }
+}
+
+/// A writable page in a table.
+pub struct TablePageMut<'a> {
+    /// The table the page belongs to.
+    table: &'a Table,
+    /// The buffer of the page.
     buf: &'a mut [u8],
+    /// The size of a record.
+    record_size: usize,
     /// Maximum number of records in the page.
     max_records: usize,
     /// The size of the free slot bitmap.
@@ -197,36 +326,22 @@ pub struct TablePage<'a> {
     occupied: BitSet,
 }
 
-impl<'a> TablePage<'a> {
+impl<'a> TablePageMut<'a> {
     /// Create a new page object representing a page in a buffer.
-    pub fn new(
-        table: &'a Table,
-        buf: &'a mut [u8],
-        max_records: usize,
-        free_bitmap_size: usize,
-    ) -> Self {
+    pub fn new(table: &'a Table, buf: &'a mut [u8]) -> Self {
+        let record_size = table.schema.get_record_size();
+        let max_records = table.schema.get_max_records();
+        let free_bitmap_size = table.schema.get_free_bitmap_size();
         let occupied = BitSet::from_bytes(&buf[2 * LINK_SIZE..2 * LINK_SIZE + free_bitmap_size]);
-        let free = (0..max_records)
-            .find(|i| !occupied.contains(*i))
-            .or_else(|| None);
+        let free = (0..max_records).find(|i| !occupied.contains(*i)).or(None);
         Self {
             table,
             buf,
+            record_size,
             max_records,
             free_bitmap_size,
             free,
             occupied,
-        }
-    }
-
-    /// Get the previous page number.
-    pub fn get_prev(&self) -> Option<usize> {
-        let prev = &self.buf[..LINK_SIZE];
-        let prev = u32::from_le_bytes(prev.try_into().unwrap());
-        if prev == 0 {
-            None
-        } else {
-            Some((prev - 1) as usize)
         }
     }
 
@@ -238,28 +353,12 @@ impl<'a> TablePage<'a> {
         self.buf[..LINK_SIZE].copy_from_slice(&prev);
     }
 
-    /// Get the next page number.
-    pub fn get_next(&self) -> Option<usize> {
-        let next = &self.buf[LINK_SIZE..2 * LINK_SIZE];
-        let next = u32::from_le_bytes(next.try_into().unwrap());
-        if next == 0 {
-            None
-        } else {
-            Some((next - 1) as usize)
-        }
-    }
-
     /// Set the next page number.
     pub fn set_next(&mut self, next: Option<usize>) {
         let next = next.map(|n| n as u32);
         let next = next.map_or(0, |n| n + 1);
         let next = next.to_le_bytes();
         self.buf[LINK_SIZE..2 * LINK_SIZE].copy_from_slice(&next);
-    }
-
-    /// Check if the i-th slot is free.
-    pub fn is_free(&self, i: usize) -> bool {
-        !self.occupied.contains(i)
     }
 
     /// Set the i-th slot to be free.
@@ -277,7 +376,7 @@ impl<'a> TablePage<'a> {
         self.buf[2 * LINK_SIZE + i / 8] |= 1 << (7 - i % 8);
         self.free = (i + 1..self.max_records)
             .find(|i| !self.occupied.contains(*i))
-            .or_else(|| None);
+            .or(None);
     }
 
     /// Insert a record into the page.
@@ -291,8 +390,89 @@ impl<'a> TablePage<'a> {
 
         let offset =
             2 * LINK_SIZE + self.free_bitmap_size + free * self.table.schema.get_record_size();
-        record.save_into(&mut self.buf, offset, schema);
+        record.save_into(self.buf, offset, schema);
 
         self.free.is_some()
+    }
+}
+
+impl<'a> LinkedPage<'a> for TablePageMut<'a> {
+    fn get_table(&self) -> &'a Table {
+        self.table
+    }
+
+    fn get_buf(&self) -> &[u8] {
+        self.buf
+    }
+
+    fn get_record_size(&self) -> usize {
+        self.record_size
+    }
+
+    fn get_max_records(&self) -> usize {
+        self.max_records
+    }
+
+    fn get_free_bitmap_size(&self) -> usize {
+        self.free_bitmap_size
+    }
+
+    fn get_occupied(&self) -> &BitSet {
+        &self.occupied
+    }
+}
+
+impl<'a> IntoIterator for &'a TablePage<'a> {
+    type Item = Record;
+    type IntoIter = PageIterator<'a, TablePage<'a>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+/// An iterator over records in a page.
+pub struct PageIterator<'a, T: LinkedPage<'a>> {
+    page: &'a T,
+    slot: usize,
+    offset: usize,
+}
+
+impl<'a, T: LinkedPage<'a>> PageIterator<'a, T> {
+    /// Create a new iterator over records in a page.
+    pub fn new(page: &'a T) -> Self {
+        Self {
+            page,
+            slot: 0,
+            offset: 2 * LINK_SIZE + page.get_free_bitmap_size(),
+        }
+    }
+
+    /// Increment the iterator.
+    fn inc(&mut self) {
+        self.slot += 1;
+        self.offset += self.page.get_record_size();
+    }
+}
+
+impl<'a, T: LinkedPage<'a>> Iterator for PageIterator<'a, T> {
+    type Item = Record;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.slot < self.page.get_max_records() {
+            if self.page.is_free(self.slot) {
+                self.inc();
+                continue;
+            }
+            let record = Record::from(
+                self.page.get_buf(),
+                self.offset,
+                &self.page.get_table().schema,
+            );
+            self.inc();
+            return Some(record);
+        }
+
+        None
     }
 }

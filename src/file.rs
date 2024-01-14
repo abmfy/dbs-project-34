@@ -209,6 +209,12 @@ impl PageCache {
     }
 }
 
+impl Default for PageCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::setup;

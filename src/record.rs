@@ -2,12 +2,11 @@
 
 use bit_set::BitSet;
 
-use crate::error::Result;
-use crate::schema::{TableSchema, Type, Value};
+use crate::schema::{ColumnSelector, Selector, Selectors, TableSchema, Type, Value};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record {
-    fields: Vec<Value>,
+    pub fields: Vec<Value>,
 }
 
 impl Record {
@@ -17,7 +16,7 @@ impl Record {
     }
 
     /// Deserialize a record from a buffer.
-    pub fn from(buf: &[u8], mut offset: usize, schema: &TableSchema) -> Result<Self> {
+    pub fn from(buf: &[u8], mut offset: usize, schema: &TableSchema) -> Self {
         let nulls = BitSet::from_bytes(&buf[offset..offset + schema.get_null_bitmap_size()]);
         offset += schema.get_null_bitmap_size();
 
@@ -43,7 +42,7 @@ impl Record {
             fields.push(value);
             offset += column.typ.size();
         }
-        Ok(Self { fields })
+        Self { fields }
     }
 
     /// Save a record into a buffer.
@@ -81,6 +80,24 @@ impl Record {
 
         null_buf[..null_bytes.len()].copy_from_slice(null_bytes);
         null_buf[null_bytes.len()..].fill(0);
+    }
+
+    /// Select some fields in the record.
+    pub fn select(&self, selectors: &Selectors, schema: &TableSchema) -> Record {
+        match selectors {
+            Selectors::All => self.clone(),
+            Selectors::Some(selectors) => {
+                let mut fields = vec![];
+                for selector in selectors {
+                    match selector {
+                        Selector::Column(ColumnSelector(_, column)) => {
+                            fields.push(self.fields[schema.get_offset(column)].clone())
+                        }
+                    }
+                }
+                Record { fields }
+            }
+        }
     }
 }
 
@@ -141,7 +158,7 @@ mod tests {
 
         log::info!("Test serializing. Buf: {:?}", &buf[..512]);
 
-        let record = Record::from(&buf, 0, &schema).unwrap();
+        let record = Record::from(&buf, 0, &schema);
 
         log::info!("Test deserializing. Record: {:?}", record);
 
@@ -164,7 +181,7 @@ mod tests {
 
         log::info!("Test serializing. Buf: {:?}", &buf[..512]);
 
-        let record = Record::from(&buf, 0, &schema).unwrap();
+        let record = Record::from(&buf, 0, &schema);
 
         log::info!("Test deserializing. Record: {:?}", record);
 
@@ -267,7 +284,7 @@ mod tests {
 
         log::info!("Test serializing. Buf: {:?}", &buf[..512]);
 
-        let record = Record::from(&buf, 0, &schema).unwrap();
+        let record = Record::from(&buf, 0, &schema);
 
         log::info!("Test deserializing. Record: {:?}", record);
 

@@ -9,7 +9,7 @@ use csv::ReaderBuilder;
 use crate::error::{Error, Result};
 use crate::file::FS;
 use crate::record::Record;
-use crate::schema::{Schema, TableSchema, Value};
+use crate::schema::{Schema, Selectors, TableSchema, Value, WhereClause};
 use crate::table::Table;
 
 /// Database system manager.
@@ -282,6 +282,25 @@ impl System {
         }
 
         Ok(count)
+    }
+
+    /// Execute select statement.
+    pub fn select(
+        &mut self,
+        selectors: &Selectors,
+        tables: &[&str],
+        where_clauses: &[WhereClause],
+    ) -> Result<Vec<Record>> {
+        log::info!("Executing select statement");
+
+        assert_eq!(tables.len(), 1, "Joining is not supported yet");
+
+        let table = self.get_table(tables[0])?;
+
+        let mut fs = FS.lock()?;
+        let ret = table.select(&mut fs, selectors, where_clauses)?;
+
+        Ok(ret)
     }
 }
 

@@ -1,6 +1,7 @@
 //! Table schema.
 
 use std::{
+    cmp::Ordering,
     collections::HashMap,
     fmt::{self, Display, Formatter},
     fs::File,
@@ -9,8 +10,11 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{LINK_SIZE, PAGE_SIZE};
 use crate::error::{Error, Result};
+use crate::{
+    config::{LINK_SIZE, PAGE_SIZE},
+    record::Record,
+};
 
 /// A type of a column.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -50,6 +54,17 @@ pub enum Value {
     Varchar(String),
 }
 
+impl PartialOrd for Value {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match (self, other) {
+            (Value::Int(a), Value::Int(b)) => a.partial_cmp(b),
+            (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
+            (Value::Varchar(a), Value::Varchar(b)) => a.partial_cmp(b),
+            _ => None,
+        }
+    }
+}
+
 impl Value {
     /// Parse value from string.
     pub fn from(s: &str, typ: &Type) -> Result<Self> {
@@ -62,13 +77,13 @@ impl Value {
 
     /// Check if the value matches the type.
     pub fn check_type(&self, typ: &Type) -> bool {
-        match (self, typ) {
-            (Value::Null, _) => true,
-            (Value::Int(_), Type::Int) => true,
-            (Value::Float(_), Type::Float) => true,
-            (Value::Varchar(_), Type::Varchar(_)) => true,
-            _ => false,
-        }
+        matches!(
+            (self, typ),
+            (Value::Null, _)
+                | (Value::Int(_), Type::Int)
+                | (Value::Float(_), Type::Float)
+                | (Value::Varchar(_), Type::Varchar(_))
+        )
     }
 }
 
@@ -161,6 +176,83 @@ impl Display for Constraint {
 pub enum Field {
     Column(Column),
     Constraint(Constraint),
+}
+
+/// Query selectors in a select statement.
+pub enum Selectors {
+    All,
+    Some(Vec<Selector>),
+}
+
+/// Column selector in the form table.column,
+/// where table part is optional
+pub struct ColumnSelector(pub Option<String>, pub String);
+
+/// Query selector.
+pub enum Selector {
+    Column(ColumnSelector),
+}
+
+impl Display for Selector {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Selector::Column(ColumnSelector(table, column)) => {
+                if let Some(table) = table {
+                    write!(f, "{}.", table)?;
+                }
+                write!(f, "{}", column)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// SQL operator.
+pub enum Operator {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+/// SQL expression.
+pub enum Expression {
+    Value(Value),
+    Column(ColumnSelector),
+}
+
+/// Where clause.
+pub enum WhereClause {
+    OperatorExpression(ColumnSelector, Operator, Expression),
+}
+
+impl WhereClause {
+    /// Check if the where clause matches a record.
+    pub fn matches(&self, record: &Record, schema: &TableSchema) -> bool {
+        match self {
+            WhereClause::OperatorExpression(ColumnSelector(_, column), op, expr) => {
+                let column = schema.get_column(column);
+                let expr = match expr {
+                    Expression::Value(v) => v,
+                    Expression::Column(ColumnSelector(_, column)) => {
+                        let column = schema.get_column(column);
+                        &record.fields[schema.column_map[&column.name]]
+                    }
+                };
+                let value = &record.fields[schema.column_map[&column.name]];
+                match op {
+                    Operator::Eq => value == expr,
+                    Operator::Ne => value != expr,
+                    Operator::Lt => value < expr,
+                    Operator::Le => value <= expr,
+                    Operator::Gt => value > expr,
+                    Operator::Ge => value >= expr,
+                }
+            }
+        }
+    }
 }
 
 /// A table schema. This type is for serialization.
@@ -295,6 +387,11 @@ impl TableSchema {
     /// Get the offset of a column in a record.
     pub fn get_offset(&self, name: &str) -> usize {
         self.offsets[self.column_map[name]]
+    }
+
+    /// Get count of pages in the table.
+    pub fn get_pages(&self) -> usize {
+        self.schema.pages
     }
 
     /// Get the first free page in the table.
