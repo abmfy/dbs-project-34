@@ -1,5 +1,6 @@
 //! SQL parser.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use pest::{
@@ -10,8 +11,8 @@ use pest_derive::Parser;
 use prettytable::{format::consts::FORMAT_NO_LINESEP_WITH_TITLE, row, Table};
 
 use crate::{
-    error::Result,
-    schema::{Column, Schema, Type, Value},
+    error::{Error, Result},
+    schema::{Column, Constraint, Field, Schema, Type, Value},
     stat::QueryStat,
     system::System,
 };
@@ -189,62 +190,151 @@ fn parse_value(value: Pair<Rule>) -> Result<Value> {
     Ok(ret)
 }
 
-fn parse_field_list(field_list: Pairs<Rule>) -> Result<Vec<Column>> {
-    let mut ret = vec![];
+fn parse_column(pairs: Pairs<Rule>) -> Result<Column> {
+    let mut name = None;
+    let mut typ = None;
+    let mut not_null = false;
+    let mut default = None;
 
-    for field in field_list {
-        match field.as_rule() {
-            Rule::field_def => {
-                let mut name = None;
-                let mut typ = None;
-                let mut not_null = false;
-                let mut default = None;
-
-                for pair in field.into_inner() {
-                    match pair.as_rule() {
-                        Rule::identifier => {
-                            name = Some(pair.as_str());
-                        }
-                        Rule::typ => {
-                            let pair = pair.into_inner().next().unwrap();
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::identifier => {
+                name = Some(pair.as_str());
+            }
+            Rule::typ => {
+                let pair = pair.into_inner().next().unwrap();
+                match pair.as_rule() {
+                    Rule::int_t => {
+                        typ = Some(Type::Int);
+                    }
+                    Rule::float_t => {
+                        typ = Some(Type::Float);
+                    }
+                    Rule::varchar_t => {
+                        let mut size = None;
+                        for pair in pair.into_inner() {
                             match pair.as_rule() {
-                                Rule::int_t => {
-                                    typ = Some(Type::Int);
+                                Rule::integer => {
+                                    size = Some(pair.as_str().parse().unwrap());
                                 }
-                                Rule::float_t => {
-                                    typ = Some(Type::Float);
-                                }
-                                Rule::varchar_t => {
-                                    let mut size = None;
-                                    for pair in pair.into_inner() {
-                                        match pair.as_rule() {
-                                            Rule::integer => {
-                                                size = Some(pair.as_str().parse().unwrap());
-                                            }
-                                            _ => continue,
-                                        }
-                                    }
-                                    let size = size.unwrap();
-                                    typ = Some(Type::Varchar(size));
-                                }
-                                _ => panic!("Invalid type: {pair:?}"),
+                                _ => continue,
                             }
                         }
-                        Rule::not_null_clause => {
-                            not_null = true;
-                        }
-                        Rule::value => {
-                            default = Some(parse_value(pair.into_inner().next().unwrap())?);
+                        let size = size.unwrap();
+                        typ = Some(Type::Varchar(size));
+                    }
+                    _ => panic!("Invalid type: {pair:?}"),
+                }
+            }
+            Rule::not_null_clause => {
+                not_null = true;
+            }
+            Rule::value => {
+                default = Some(parse_value(pair.into_inner().next().unwrap())?);
+            }
+            _ => continue,
+        }
+    }
+
+    // These value are guaranteed to be Some by the grammar.
+    let name = name.unwrap();
+    let typ = typ.unwrap();
+
+    Column::new(name.to_string(), typ, !not_null, default)
+}
+
+fn parse_primary_key(pairs: Pairs<Rule>) -> Result<Constraint> {
+    let mut name = None;
+    let mut columns = vec![];
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::identifier => {
+                name = Some(pair.as_str().to_owned());
+            }
+            Rule::identifiers => {
+                for pair in pair.into_inner() {
+                    match pair.as_rule() {
+                        Rule::identifier => {
+                            columns.push(pair.as_str().to_owned());
                         }
                         _ => continue,
                     }
                 }
+            }
+            _ => continue,
+        }
+    }
 
-                // These value are guaranteed to be Some by the grammar.
-                let name = name.unwrap();
-                let typ = typ.unwrap();
+    Ok(Constraint::PrimaryKey { name, columns })
+}
 
-                ret.push(Column::new(name.to_string(), typ, !not_null, default)?);
+fn parse_foreign_key(pairs: Pairs<Rule>) -> Result<Constraint> {
+    let mut name = None;
+    let mut columns = vec![];
+    let mut ref_table = None;
+    let mut ref_columns = vec![];
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::identifier => {
+                name = Some(pair.as_str().to_owned());
+            }
+            Rule::identifiers => {
+                for pair in pair.into_inner() {
+                    match pair.as_rule() {
+                        Rule::identifier => {
+                            columns.push(pair.as_str().to_owned());
+                        }
+                        _ => continue,
+                    }
+                }
+            }
+            Rule::references_clause => {
+                for pair in pair.into_inner() {
+                    match pair.as_rule() {
+                        Rule::identifier => {
+                            ref_table = Some(pair.as_str().to_owned());
+                        }
+                        Rule::identifiers => {
+                            for pair in pair.into_inner() {
+                                match pair.as_rule() {
+                                    Rule::identifier => {
+                                        ref_columns.push(pair.as_str().to_owned());
+                                    }
+                                    _ => continue,
+                                }
+                            }
+                        }
+                        _ => continue,
+                    }
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    let ref_table = ref_table.unwrap();
+
+    Ok(Constraint::ForeignKey {
+        name,
+        columns,
+        ref_table,
+        ref_columns,
+    })
+}
+
+fn parse_field_list(field_list: Pairs<Rule>) -> Result<Vec<Field>> {
+    let mut ret = vec![];
+
+    for field in field_list {
+        match field.as_rule() {
+            Rule::field_def => ret.push(Field::Column(parse_column(field.into_inner())?)),
+            Rule::primary_key => {
+                ret.push(Field::Constraint(parse_primary_key(field.into_inner())?))
+            }
+            Rule::foreign_key => {
+                ret.push(Field::Constraint(parse_foreign_key(field.into_inner())?))
             }
             _ => continue,
         }
@@ -278,13 +368,67 @@ fn parse_create_table_statement(
     let name = name.unwrap();
     let fields = fields.unwrap();
 
+    let (columns, constraints): (Vec<Field>, Vec<Field>) =
+        fields.into_iter().partition(|field| match field {
+            Field::Column(_) => true,
+            Field::Constraint(_) => false,
+        });
+
+    let mut primary_key_count = 0;
+    let mut primary_key_columns = HashSet::new();
+    let constraints = constraints
+        .into_iter()
+        .map(|field| match field {
+            Field::Constraint(constraint) => {
+                match &constraint {
+                    Constraint::PrimaryKey { columns, .. } => {
+                        primary_key_count += 1;
+                        primary_key_columns.extend(columns.clone());
+                    }
+                    _ => {}
+                }
+                constraint
+            }
+            _ => unreachable!(),
+        })
+        .collect();
+
+    if primary_key_count > 1 {
+        return Err(Error::MultiplePrimaryKeys(name.to_owned()));
+    }
+
+    let mut duplicate_column_name = None;
+    let mut column_names = HashSet::new();
+    let columns = columns
+        .into_iter()
+        .map(|field| match field {
+            Field::Column(mut column) => {
+                if column_names.contains(&column.name) {
+                    duplicate_column_name = Some(column.name.clone());
+                }
+                // It's implied that the primary keys are not null.
+                if primary_key_columns.contains(&column.name) {
+                    column.nullable = false;
+                }
+                column_names.insert(column.name.clone());
+                column
+            }
+            _ => unreachable!(),
+        })
+        .collect();
+
+    if let Some(name) = duplicate_column_name {
+        return Err(Error::DuplicateColumn(name));
+    }
+
     system.create_table(
         name,
         Schema {
             pages: 0,
             free: None,
             full: None,
-            columns: fields,
+            columns,
+            constraints,
         },
     )?;
 
@@ -323,7 +467,9 @@ fn parse_desc_statement(system: &mut System, statement: Pairs<Rule>) -> Result<(
         ret.add_row(row![column.name, column.typ, nullable, default,]);
     });
 
-    Ok((ret, QueryStat::Query(schema.get_columns().len())))
+    let constraints = schema.get_constraints().into();
+
+    Ok((ret, QueryStat::Desc(constraints)))
 }
 
 fn parse_load_statement(system: &mut System, statement: Pairs<Rule>) -> Result<(Table, QueryStat)> {

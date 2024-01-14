@@ -19,7 +19,7 @@ use file::FS;
 use parser::parse;
 use system::System;
 
-use crate::stat::QueryStat;
+use crate::{schema::Constraint, stat::QueryStat};
 
 /// Write back page cache and shutdown.
 fn exit() -> Result<()> {
@@ -48,8 +48,18 @@ fn batch_main(mut system: System) -> Result<()> {
 
         for (command, result) in parse(&mut system, &buf) {
             match result {
-                Ok((table, _)) => {
+                Ok((table, stat)) => {
                     table.to_csv(io::stdout())?;
+
+                    match stat {
+                        QueryStat::Desc(constraints) => {
+                            println!();
+                            for constraint in constraints {
+                                println!("{constraint}");
+                            }
+                        }
+                        _ => {}
+                    }
                 }
                 Err(err) => {
                     println!("!ERROR");
@@ -116,6 +126,12 @@ fn shell_main(mut system: System) -> Result<()> {
                                         } else {
                                             print!("{size} rows affected");
                                         }
+                                    }
+                                    QueryStat::Desc(constraints) => {
+                                        for constraint in constraints {
+                                            println!("{constraint}");
+                                        }
+                                        print!("Desc OK");
                                     }
                                 }
                                 let elapsed = start_time.elapsed();

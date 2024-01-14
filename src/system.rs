@@ -53,7 +53,7 @@ impl System {
         }
 
         if let Some(db) = &self.db {
-            if &path == db {
+            if path.canonicalize()? == db.canonicalize()? {
                 log::info!("Already using database {}", name);
                 return Ok(());
             }
@@ -122,7 +122,7 @@ impl System {
 
         // Dropping current database. Flush cache.
         if let Some(db) = &self.db {
-            if &path == db {
+            if path.canonicalize()? == db.canonicalize()? {
                 log::info!("Dropping current database. Flushing cache.");
                 self.db_name = None;
                 self.db = None;
@@ -158,7 +158,7 @@ impl System {
         let file = File::open(meta.clone())?;
         let schema = serde_json::from_reader(file)?;
 
-        Ok(Table::new(fd, TableSchema::new(schema, &meta)))
+        Ok(Table::new(fd, TableSchema::new(schema, &meta)?))
     }
 
     /// Get a table for read.
@@ -271,7 +271,7 @@ impl System {
         let mut reader = ReaderBuilder::new().has_headers(false).from_path(file)?;
         for result in reader.records() {
             let record = result?;
-            log::info!("Loading record {record:?}");
+            log::debug!("Loading record {record:?}");
             let mut fields = vec![];
             for (field, column) in record.iter().zip(table.get_schema().get_columns()) {
                 fields.push(Value::from(field, &column.typ)?);

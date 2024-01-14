@@ -28,9 +28,18 @@ pub enum Error {
     TableExists(String),
     #[error("Table `{0}` not found")]
     TableNotFound(String),
+    #[error("Column `{0}` not found")]
+    ColumnNotFound(String),
+
+    #[error("Duplicate column name `{0}`")]
+    DuplicateColumn(String),
+    #[error("Multiple primary keys on table `{0}`")]
+    MultiplePrimaryKeys(String),
 
     #[error("Value `{0}` does not match type `{1}`")]
     TypeMismatch(Value, Type),
+    #[error("Column `{0}` must not be nullable")]
+    NotNullable(String),
 
     #[error("CSV error: {0}")]
     Csv(#[from] CsvError),

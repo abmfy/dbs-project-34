@@ -47,7 +47,7 @@ impl Table {
     /// Allocate a new page.
     pub fn new_page<'a>(&'a mut self, fs: &'a mut PageCache) -> Result<TablePage> {
         let page_id = self.schema.new_page()?;
-        log::info!("Allocating new page {page_id}");
+        log::debug!("Allocating new page {page_id}");
 
         if let Some(next_page_id) = self.schema.get_free() {
             let next_page_buf = fs.get_mut(self.fd, next_page_id)?;
@@ -72,7 +72,7 @@ impl Table {
         fs: &'a mut PageCache,
         page_id: usize,
     ) -> Result<(Option<usize>, Option<usize>)> {
-        log::info!("Taking page {page_id} off the linked list");
+        log::debug!("Taking page {page_id} off the linked list");
 
         let page_buf = fs.get_mut(self.fd, page_id)?;
         let page = TablePage::new(self, page_buf, self.max_records, self.free_bitmap_size);
@@ -101,7 +101,7 @@ impl Table {
 
     /// Mark a page as free.
     pub fn free_page<'a>(&'a mut self, fs: &'a mut PageCache, page_id: usize) -> Result<()> {
-        log::info!("Marking page {page_id} as free");
+        log::debug!("Marking page {page_id} as free");
 
         let (prev, next) = self.take_page(fs, page_id)?;
 
@@ -131,7 +131,7 @@ impl Table {
 
     /// Mark a page as full.
     pub fn full_page<'a>(&'a mut self, fs: &'a mut PageCache, page_id: usize) -> Result<()> {
-        log::info!("Marking page {page_id} as full");
+        log::debug!("Marking page {page_id} as full");
 
         let (prev, next) = self.take_page(fs, page_id)?;
 
@@ -161,10 +161,10 @@ impl Table {
 
     /// Insert a record into the table.
     pub fn insert<'a>(&'a mut self, fs: &'a mut PageCache, record: Record) -> Result<()> {
-        log::info!("Inserting {record:?}");
+        log::debug!("Inserting {record:?}");
 
         if self.schema.get_free().is_none() {
-            log::info!("No free page, allocating a new page");
+            log::debug!("No free page, allocating a new page");
             self.new_page(fs)?;
         }
 
@@ -173,7 +173,7 @@ impl Table {
         let mut page = TablePage::new(self, page_buf, self.max_records, self.free_bitmap_size);
 
         if !page.insert(record, &self.schema) {
-            log::info!("A page is filled");
+            log::debug!("A page is filled");
             self.full_page(fs, page_id)?;
         }
 

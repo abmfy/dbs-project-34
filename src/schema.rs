@@ -56,7 +56,7 @@ impl Value {
         match typ {
             Type::Int => Ok(Value::Int(s.parse()?)),
             Type::Float => Ok(Value::Float(s.parse()?)),
-            Type::Varchar(_) => Ok(Value::Varchar(s[1..s.len() - 1].to_owned())),
+            Type::Varchar(_) => Ok(Value::Varchar(s.to_owned())),
         }
     }
 
@@ -109,6 +109,60 @@ impl Column {
     }
 }
 
+/// A constraint on a table.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum Constraint {
+    PrimaryKey {
+        name: Option<String>,
+        columns: Vec<String>,
+    },
+    ForeignKey {
+        name: Option<String>,
+        columns: Vec<String>,
+        ref_table: String,
+        ref_columns: Vec<String>,
+    },
+}
+
+impl Display for Constraint {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Constraint::PrimaryKey { name, columns } => {
+                write!(f, "PRIMARY KEY ")?;
+                if let Some(name) = name {
+                    write!(f, "{}", name)?;
+                }
+                write!(f, "({})", columns.join(", "))?;
+            }
+            Constraint::ForeignKey {
+                name,
+                columns,
+                ref_table,
+                ref_columns,
+            } => {
+                write!(f, "FOREIGN KEY ")?;
+                if let Some(name) = name {
+                    write!(f, "{}", name)?;
+                }
+                write!(
+                    f,
+                    "({}) REFERENCES {}({})",
+                    columns.join(", "),
+                    ref_table,
+                    ref_columns.join(", ")
+                )?;
+            }
+        }
+        write!(f, ";")
+    }
+}
+
+/// A field represents a column or a constraint.
+pub enum Field {
+    Column(Column),
+    Constraint(Constraint),
+}
+
 /// A table schema. This type is for serialization.
 #[derive(Deserialize, Serialize)]
 pub struct Schema {
@@ -120,6 +174,8 @@ pub struct Schema {
     pub full: Option<usize>,
     /// Columns of the table.
     pub columns: Vec<Column>,
+    /// Constraints on the table.
+    pub constraints: Vec<Constraint>,
 }
 
 /// A wrapped table schema.
@@ -130,6 +186,8 @@ pub struct TableSchema {
     path: PathBuf,
     /// Columns of the table.
     columns: Vec<Column>,
+    /// Constraints on the table.
+    constraints: Vec<Constraint>,
     /// Offsets of columns in a record.
     offsets: Vec<usize>,
     /// The size of the null bitmap.
@@ -146,7 +204,7 @@ pub struct TableSchema {
 
 impl TableSchema {
     /// Initialize schema information.
-    pub fn new(schema: Schema, path: &Path) -> Self {
+    pub fn new(schema: Schema, path: &Path) -> Result<Self> {
         let columns = schema.columns.clone();
         let offsets = columns
             .iter()
@@ -175,17 +233,20 @@ impl TableSchema {
         }
         log::info!("Max records {max_records} with {free_bitmap_size} bytes free bitmap");
 
-        Self {
+        let constraints = schema.constraints.clone();
+
+        Ok(Self {
             schema,
             path: path.to_owned(),
             columns,
+            constraints,
             offsets,
             null_bitmap_size,
             record_size,
             max_records,
             free_bitmap_size,
             column_map,
-        }
+        })
     }
 
     /// Save changes into the schema file.
@@ -209,6 +270,11 @@ impl TableSchema {
     /// Return a reference to column information.
     pub fn get_columns(&self) -> &[Column] {
         &self.columns
+    }
+
+    /// Return a reference to table constraints.
+    pub fn get_constraints(&self) -> &[Constraint] {
+        &self.constraints
     }
 
     /// Get a column by its name.

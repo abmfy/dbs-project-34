@@ -123,9 +123,11 @@ mod tests {
                         default: None,
                     },
                 ],
+                constraints: vec![],
             },
             &PathBuf::new(),
-        );
+        )
+        .unwrap();
 
         let mut buf = [0u8; PAGE_SIZE];
         let record = Record {
@@ -240,9 +242,11 @@ mod tests {
                         default: None,
                     },
                 ],
+                constraints: vec![],
             },
             &PathBuf::new(),
-        );
+        )
+        .unwrap();
 
         let mut buf = [0u8; PAGE_SIZE];
         let record = Record {

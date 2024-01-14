@@ -39,7 +39,7 @@ impl File {
         self.file.seek(SeekFrom::Start(offset as u64))?;
 
         let bytes_read = self.file.read(buf)?;
-        log::info!(
+        log::debug!(
             "Read {} bytes from page {} on file {}",
             bytes_read,
             page,
@@ -54,7 +54,7 @@ impl File {
         let offset = page * PAGE_SIZE;
         self.file.seek(SeekFrom::Start(offset as u64))?;
         self.file.write_all(buf)?;
-        log::info!("Write to page {} on file {}", page, self.id);
+        log::debug!("Write to page {} on file {}", page, self.id);
         Ok(())
     }
 }
@@ -86,9 +86,9 @@ impl Page {
 
     /// Write back the page into disk.
     fn write_back(&mut self, file: &mut File, page: usize) -> io::Result<()> {
-        log::info!("Writing back page {} into file {}", page, file.id);
+        log::debug!("Writing back page {} into file {}", page, file.id);
         if self.dirty {
-            log::info!("Page dirty, executing write");
+            log::debug!("Page dirty, executing write");
             file.write_page(page, &self.buf)?;
             self.dirty = false;
         }
@@ -169,7 +169,7 @@ impl PageCache {
 
         // Cache miss
         if !self.cache.contains(&key) {
-            log::info!("Cache miss, file {}, page {}", file.id, page);
+            log::debug!("Cache miss, file {}, page {}", file.id, page);
 
             // Reload the page from disk
             let page_buf = Page::new(file, page)?;
@@ -178,7 +178,7 @@ impl PageCache {
             if let Some(((old_file, old_page), mut old_page_buf)) = self.cache.push(key, page_buf) {
                 // LRUCache.push returns the hit entry or the evicted entry, so we need to check here
                 if (old_file, old_page) != (file.id, page) {
-                    log::info!("Evicting page {} on file {}", old_page, old_file);
+                    log::debug!("Evicting page {} on file {}", old_page, old_file);
                     // Evict the least recently used page
                     let file = self
                         .files
@@ -188,7 +188,7 @@ impl PageCache {
                 }
             }
         } else {
-            log::info!("Cache hit, file {}, page {}", file.id, page);
+            log::debug!("Cache hit, file {}, page {}", file.id, page);
         }
 
         Ok(())
@@ -196,14 +196,14 @@ impl PageCache {
 
     /// Get a given page on a file for read.
     pub fn get(&mut self, file: Uuid, page: usize) -> io::Result<&[u8]> {
-        log::info!("Getting page {} on file {} for read", page, file);
+        log::debug!("Getting page {} on file {} for read", page, file);
         self.cache_probe(file, page)?;
         Ok(self.cache.get(&(file, page)).unwrap().as_buf())
     }
 
     /// Get a given page on a file for write.
     pub fn get_mut(&mut self, file: Uuid, page: usize) -> io::Result<&mut [u8]> {
-        log::info!("Getting page {} on file {} for write", page, file);
+        log::debug!("Getting page {} on file {} for write", page, file);
         self.cache_probe(file, page)?;
         Ok(self.cache.get_mut(&(file, page)).unwrap().as_buf_mut())
     }
