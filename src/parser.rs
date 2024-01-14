@@ -1,5 +1,7 @@
 //! SQL parser.
 
+use std::path::Path;
+
 use pest::{
     iterators::{Pair, Pairs},
     Parser,
@@ -9,7 +11,7 @@ use prettytable::{format::consts::FORMAT_NO_LINESEP_WITH_TITLE, row, Table};
 
 use crate::{
     error::Result,
-    schema::{Column, Type, Value, Schema},
+    schema::{Column, Schema, Type, Value},
     stat::QueryStat,
     system::System,
 };
@@ -157,12 +159,12 @@ fn parse_table_statement(
     system: &mut System,
     statement: Pairs<Rule>,
 ) -> Result<(Table, QueryStat)> {
-
     let pair = statement.into_iter().next().unwrap();
     match pair.as_rule() {
         Rule::create_table_statement => parse_create_table_statement(system, pair.into_inner()),
         Rule::drop_table_statement => parse_drop_table_statement(system, pair.into_inner()),
         Rule::desc_statement => parse_desc_statement(system, pair.into_inner()),
+        Rule::load_statement => parse_load_statement(system, pair.into_inner()),
         _ => unimplemented!(),
     }
 }
@@ -178,7 +180,7 @@ fn parse_value(value: Pair<Rule>) -> Result<Value> {
             ret = Value::Float(value.as_str().parse()?);
         }
         Rule::string => {
-            ret = Value::Varchar(value.as_str().to_owned());
+            ret = Value::Varchar(value.into_inner().next().unwrap().as_str().to_owned());
         }
         Rule::null => ret = Value::Null,
         _ => panic!("Invalid value: {value:?}"),
@@ -242,12 +244,7 @@ fn parse_field_list(field_list: Pairs<Rule>) -> Result<Vec<Column>> {
                 let name = name.unwrap();
                 let typ = typ.unwrap();
 
-                ret.push(Column::new(
-                    name.to_string(),
-                    typ,
-                    !not_null,
-                    default,
-                )?);
+                ret.push(Column::new(name.to_string(), typ, !not_null, default)?);
             }
             _ => continue,
         }
@@ -281,9 +278,15 @@ fn parse_create_table_statement(
     let name = name.unwrap();
     let fields = fields.unwrap();
 
-    system.create_table(name, Schema {
-        columns: fields,
-    })?;
+    system.create_table(
+        name,
+        Schema {
+            pages: 0,
+            free: None,
+            full: None,
+            columns: fields,
+        },
+    )?;
 
     Ok((fresh_table(), QueryStat::Update(0)))
 }
@@ -301,10 +304,7 @@ fn parse_drop_table_statement(
     Ok((fresh_table(), QueryStat::Update(0)))
 }
 
-fn parse_desc_statement(
-    system: &mut System,
-    statement: Pairs<Rule>,
-) -> Result<(Table, QueryStat)> {
+fn parse_desc_statement(system: &mut System, statement: Pairs<Rule>) -> Result<(Table, QueryStat)> {
     log::info!("Parsing desc statement: {statement:?}");
 
     let name = statement.into_iter().next().unwrap().as_str();
@@ -314,19 +314,46 @@ fn parse_desc_statement(
     let mut ret = fresh_table();
     ret.set_titles(row!["Field", "Type", "Null", "Default"]);
 
-    schema.columns.iter().for_each(|column| {
+    schema.get_columns().iter().for_each(|column| {
         let default = match &column.default {
             Some(value) => value.to_string(),
             None => "NULL".to_string(),
         };
         let nullable = if column.nullable { "YES" } else { "NO" };
-        ret.add_row(row![
-            column.name,
-            column.typ,
-            nullable,
-            default,
-        ]);
+        ret.add_row(row![column.name, column.typ, nullable, default,]);
     });
 
-    Ok((ret, QueryStat::Query(schema.columns.len())))
+    Ok((ret, QueryStat::Query(schema.get_columns().len())))
+}
+
+fn parse_load_statement(system: &mut System, statement: Pairs<Rule>) -> Result<(Table, QueryStat)> {
+    log::info!("Parsing load statement: {statement:?}");
+
+    let mut ret = fresh_table();
+    ret.set_titles(row!["rows"]);
+
+    let mut file = None;
+    let mut name = None;
+
+    for pair in statement {
+        match pair.as_rule() {
+            Rule::string => {
+                if file.is_none() {
+                    file = Some(pair.into_inner().next().unwrap().as_str());
+                }
+            }
+            Rule::identifier => {
+                name = Some(pair.as_str());
+            }
+            _ => continue,
+        }
+    }
+
+    let file = file.unwrap();
+    let name = name.unwrap();
+
+    let rows = system.load_table(name, Path::new(file))?;
+    ret.add_row(row![rows]);
+
+    Ok((ret, QueryStat::Update(rows)))
 }

@@ -4,11 +4,16 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::num::NonZeroUsize;
+use std::path::Path;
+use std::sync::Mutex;
 
 use lru::LruCache;
+use once_cell::sync::Lazy;
 use uuid::Uuid;
 
 use crate::config::{CACHE_SIZE, PAGE_SIZE};
+
+pub static FS: Lazy<Mutex<PageCache>> = Lazy::new(|| Mutex::new(PageCache::new()));
 
 /// File wrapper providing a uuid for hashing.
 pub struct File {
@@ -18,7 +23,7 @@ pub struct File {
 
 impl File {
     /// Open a file for read and write. If not exists, create it.
-    pub fn open(name: &str) -> io::Result<Self> {
+    pub fn open(name: &Path) -> io::Result<Self> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -26,11 +31,6 @@ impl File {
             .open(name)?;
         let id = Uuid::new_v4();
         Ok(Self { id, file })
-    }
-
-    /// Remove a file.
-    pub fn remove(name: &str) -> io::Result<()> {
-        fs::remove_file(name)
     }
 
     /// Read a given page on the file.
@@ -100,6 +100,7 @@ impl Page {
 /// The index is file descriptor and page number.
 pub struct PageCache {
     files: HashMap<Uuid, File>,
+    /// Paged cache.
     cache: LruCache<(Uuid, usize), Page>,
 }
 
@@ -113,7 +114,7 @@ impl PageCache {
     }
 
     /// Open a file, and return the file descriptor.
-    pub fn open(&mut self, name: &str) -> io::Result<Uuid> {
+    pub fn open(&mut self, name: &Path) -> io::Result<Uuid> {
         let file = File::open(name)?;
         let id = file.id;
         self.files.insert(file.id, file);
@@ -144,6 +145,16 @@ impl PageCache {
     pub fn clear(&mut self) {
         self.files.clear();
         self.cache.clear();
+    }
+
+    /// Write back cache into disk.
+    pub fn write_back(&mut self) -> io::Result<()> {
+        log::info!("Writing back page cache");
+        for ((file, page), page_buf) in self.cache.iter_mut() {
+            let file = self.files.get_mut(file).expect("File descriptor not found");
+            page_buf.write_back(file, *page)?;
+        }
+        Ok(())
     }
 
     /// Probe the cache for a given page on a file.
@@ -185,24 +196,16 @@ impl PageCache {
 
     /// Get a given page on a file for read.
     pub fn get(&mut self, file: Uuid, page: usize) -> io::Result<&[u8]> {
+        log::info!("Getting page {} on file {} for read", page, file);
         self.cache_probe(file, page)?;
         Ok(self.cache.get(&(file, page)).unwrap().as_buf())
     }
 
     /// Get a given page on a file for write.
     pub fn get_mut(&mut self, file: Uuid, page: usize) -> io::Result<&mut [u8]> {
+        log::info!("Getting page {} on file {} for write", page, file);
         self.cache_probe(file, page)?;
         Ok(self.cache.get_mut(&(file, page)).unwrap().as_buf_mut())
-    }
-}
-
-impl Drop for PageCache {
-    /// Write back cache into disk.
-    fn drop(&mut self) {
-        for ((file, page), page_buf) in self.cache.iter_mut() {
-            let file = self.files.get_mut(file).expect("File descriptor not found");
-            page_buf.write_back(file, *page).unwrap();
-        }
     }
 }
 
@@ -218,7 +221,7 @@ mod tests {
 
         {
             let mut text;
-            let mut file = File::open("test_file").unwrap();
+            let mut file = File::open(Path::new("test_file")).unwrap();
             let mut buf = [0u8; PAGE_SIZE];
 
             text = "Hello, world!".as_bytes();
@@ -232,7 +235,7 @@ mod tests {
 
         {
             let mut text = [0u8; PAGE_SIZE].as_ref();
-            let mut file = File::open("test_file").unwrap();
+            let mut file = File::open(Path::new("test_file")).unwrap();
             let mut buf = [0u8; PAGE_SIZE];
 
             file.read_page(3, &mut buf).unwrap();
@@ -246,7 +249,7 @@ mod tests {
             file.read_page(1, &mut buf).unwrap();
             assert_eq!(&buf[..text.len()], text);
 
-            File::remove("test_file").unwrap();
+            fs::remove_file("test_file").unwrap();
         }
     }
 
@@ -257,7 +260,7 @@ mod tests {
         let mut text = [0u8; PAGE_SIZE].as_ref();
 
         let mut cache = PageCache::new();
-        let fd = cache.open("test_page_cache").unwrap();
+        let fd = cache.open(Path::new("test_page_cache")).unwrap();
         log::info!("Opening file with fd {fd}");
 
         let mut buf;
@@ -293,9 +296,9 @@ mod tests {
         }
 
         // Force write back
-        drop(cache);
+        cache.write_back().unwrap();
         let mut cache = PageCache::new();
-        let fd = cache.open("test_page_cache").unwrap();
+        let fd = cache.open(Path::new("test_page_cache")).unwrap();
         log::info!("Opening file with fd {fd}");
 
         {
@@ -322,6 +325,6 @@ mod tests {
         // Test close
         cache.close(fd).unwrap();
 
-        File::remove("test_page_cache").unwrap();
+        fs::remove_file("test_page_cache").unwrap();
     }
 }

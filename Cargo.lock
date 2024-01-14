@@ -1023,6 +1023,7 @@ dependencies = [
  "env_logger",
  "log",
  "lru",
+ "once_cell",
  "pest",
  "pest_derive",
  "prettytable-rs",

@@ -1,4 +1,4 @@
-    WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
 COMMENT = _{ "--" ~ (!"\n" ~ ANY)* ~ "\n"? }
 
 equal_or_assign = { "=" }
@@ -24,8 +24,10 @@ id_inner = {
 }
 
 integer = @{ ASCII_DIGIT+ }
-string = @{ "'" ~ (!"'" ~ ANY)* ~ "'" }
+string = ${ "'" ~ string_inner ~ "'" }
 float = @{ "-"? ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
+
+string_inner = { (!"'" ~ ANY)* }
 
 program = _{ SOI ~ statement* ~ EOI }
 

@@ -7,6 +7,7 @@ mod schema;
 mod setup;
 mod stat;
 mod system;
+mod table;
 
 use std::io;
 use std::time::Instant;
@@ -14,10 +15,19 @@ use std::time::Instant;
 use rustyline::{config::Configurer, error::ReadlineError, DefaultEditor};
 
 use error::Result;
+use file::FS;
 use parser::parse;
 use system::System;
 
 use crate::stat::QueryStat;
+
+/// Write back page cache and shutdown.
+fn exit() -> Result<()> {
+    log::info!("Shutting down");
+    let mut fs = FS.lock()?;
+    fs.write_back()?;
+    Ok(())
+}
 
 fn batch_main(mut system: System) -> Result<()> {
     let mut buf = String::new();
@@ -27,13 +37,13 @@ fn batch_main(mut system: System) -> Result<()> {
         let size = io::stdin().read_line(&mut buf)?;
         // EOF reached
         if size == 0 {
-            break Ok(());
+            break;
         }
         buf = buf.trim().to_string();
         log::info!("Read line: {buf}");
 
         if buf == "exit" {
-            break Ok(());
+            break;
         }
 
         for (command, result) in parse(&mut system, &buf) {
@@ -49,6 +59,8 @@ fn batch_main(mut system: System) -> Result<()> {
             println!("@{command}");
         }
     }
+
+    exit()
 }
 
 fn shell_main(mut system: System) -> Result<()> {
@@ -126,14 +138,16 @@ fn shell_main(mut system: System) -> Result<()> {
             Err(ReadlineError::Interrupted) => continue,
             Err(ReadlineError::Eof) => {
                 println!("Good morning, and in case I don't see you,\nGood afternoon,\nGood evening,\nAnd good night.");
-                break Ok(());
+                break;
             }
             Err(err) => {
                 println!("Terminal error: {:?}", err);
-                break Err(err.into());
+                return Err(err.into());
             }
         }
     }
+
+    exit()
 }
 
 fn main() -> Result<()> {
@@ -158,6 +172,14 @@ fn main() -> Result<()> {
     let mut system = system::System::new(config.path.clone());
     if let Some(db) = config.database {
         system.use_database(&db)?;
+    }
+
+    // Load data into a table.
+    if let Some(file) = config.file {
+        if let Some(table) = config.table {
+            let count = system.load_table(&table, &file)?;
+            log::info!("Loaded {} rows into table {}", count, table);
+        }
     }
 
     if config.batch {

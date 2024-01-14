@@ -2,7 +2,6 @@
 
 use bit_set::BitSet;
 
-use crate::config::PAGE_SIZE;
 use crate::error::Result;
 use crate::schema::{TableSchema, Type, Value};
 
@@ -12,10 +11,15 @@ pub struct Record {
 }
 
 impl Record {
+    /// Create a new record.
+    pub fn new(fields: Vec<Value>) -> Self {
+        Self { fields }
+    }
+
     /// Deserialize a record from a buffer.
     pub fn from(buf: &[u8], mut offset: usize, schema: &TableSchema) -> Result<Self> {
-        let nulls = BitSet::from_bytes(&buf[offset..offset + schema.null_bitmap_size()]);
-        offset += schema.null_bitmap_size();
+        let nulls = BitSet::from_bytes(&buf[offset..offset + schema.get_null_bitmap_size()]);
+        offset += schema.get_null_bitmap_size();
 
         let mut fields = Vec::new();
         for (i, column) in schema.get_columns().iter().enumerate() {
@@ -30,7 +34,7 @@ impl Record {
             let value = match &column.typ {
                 Type::Int => Value::Int(i32::from_le_bytes(value_buf.try_into().unwrap())),
                 Type::Float => Value::Float(f64::from_le_bytes(value_buf.try_into().unwrap())),
-                Type::Varchar(size) => {
+                Type::Varchar(_) => {
                     let s = String::from_utf8_lossy(value_buf).to_string();
                     Value::Varchar(s)
                 }
@@ -43,9 +47,9 @@ impl Record {
     }
 
     /// Save a record into a buffer.
-    pub fn save_into(&self, buf: &mut [u8], mut offset: usize, schema: &TableSchema) -> Result<()> {
+    pub fn save_into(&self, buf: &mut [u8], mut offset: usize, schema: &TableSchema) {
         let offset_orig = offset;
-        offset += schema.null_bitmap_size();
+        offset += schema.get_null_bitmap_size();
 
         let mut nulls = BitSet::new();
 
@@ -72,18 +76,19 @@ impl Record {
             offset += schema.get_columns()[i].typ.size();
         }
 
-        let null_buf = &mut buf[offset_orig..offset_orig + schema.null_bitmap_size()];
+        let null_buf = &mut buf[offset_orig..offset_orig + schema.get_null_bitmap_size()];
         let null_bytes = &nulls.into_bit_vec().to_bytes();
 
         null_buf[..null_bytes.len()].copy_from_slice(null_bytes);
         null_buf[null_bytes.len()..].fill(0);
-
-        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use crate::config::PAGE_SIZE;
     use crate::schema::{Column, Schema, TableSchema, Value};
     use crate::setup;
 
@@ -93,28 +98,34 @@ mod tests {
     fn test_record() {
         setup::init_logging();
 
-        let schema = TableSchema::new(Schema {
-            columns: vec![
-                Column {
-                    name: "id".to_string(),
-                    typ: Type::Int,
-                    nullable: false,
-                    default: None,
-                },
-                Column {
-                    name: "name".to_string(),
-                    typ: Type::Varchar(255),
-                    nullable: false,
-                    default: None,
-                },
-                Column {
-                    name: "score".to_string(),
-                    typ: Type::Float,
-                    nullable: true,
-                    default: None,
-                },
-            ],
-        });
+        let schema = TableSchema::new(
+            Schema {
+                pages: 0,
+                free: None,
+                full: None,
+                columns: vec![
+                    Column {
+                        name: "id".to_string(),
+                        typ: Type::Int,
+                        nullable: false,
+                        default: None,
+                    },
+                    Column {
+                        name: "name".to_string(),
+                        typ: Type::Varchar(255),
+                        nullable: false,
+                        default: None,
+                    },
+                    Column {
+                        name: "score".to_string(),
+                        typ: Type::Float,
+                        nullable: true,
+                        default: None,
+                    },
+                ],
+            },
+            &PathBuf::new(),
+        );
 
         let mut buf = [0u8; PAGE_SIZE];
         let record = Record {
@@ -124,7 +135,7 @@ mod tests {
                 Value::Float(100.0),
             ],
         };
-        record.save_into(&mut buf, 0, &schema).unwrap();
+        record.save_into(&mut buf, 0, &schema);
 
         log::info!("Test serializing. Buf: {:?}", &buf[..512]);
 
@@ -140,14 +151,14 @@ mod tests {
         }
         assert_eq!(record.fields[2], Value::Float(100.0));
 
-        let mut record = Record {
+        let record = Record {
             fields: vec![
                 Value::Int(2),
                 Value::Varchar("Bob".to_string()),
                 Value::Null,
             ],
         };
-        record.save_into(&mut buf, 0, &schema).unwrap();
+        record.save_into(&mut buf, 0, &schema);
 
         log::info!("Test serializing. Buf: {:?}", &buf[..512]);
 
@@ -168,64 +179,70 @@ mod tests {
     fn test_multiple_bytes_of_null_bitmap() {
         setup::init_logging();
 
-        let schema = TableSchema::new(Schema {
-            columns: vec![
-                Column {
-                    name: "c0".to_string(),
-                    typ: Type::Int,
-                    nullable: true,
-                    default: None,
-                },
-                Column {
-                    name: "c1".to_string(),
-                    typ: Type::Int,
-                    nullable: true,
-                    default: None,
-                },
-                Column {
-                    name: "c2".to_string(),
-                    typ: Type::Int,
-                    nullable: true,
-                    default: None,
-                },
-                Column {
-                    name: "c3".to_string(),
-                    typ: Type::Int,
-                    nullable: true,
-                    default: None,
-                },
-                Column {
-                    name: "c4".to_string(),
-                    typ: Type::Int,
-                    nullable: true,
-                    default: None,
-                },
-                Column {
-                    name: "c5".to_string(),
-                    typ: Type::Int,
-                    nullable: true,
-                    default: None,
-                },
-                Column {
-                    name: "c6".to_string(),
-                    typ: Type::Int,
-                    nullable: true,
-                    default: None,
-                },
-                Column {
-                    name: "c7".to_string(),
-                    typ: Type::Int,
-                    nullable: true,
-                    default: None,
-                },
-                Column {
-                    name: "c8".to_string(),
-                    typ: Type::Int,
-                    nullable: true,
-                    default: None,
-                },
-            ],
-        });
+        let schema = TableSchema::new(
+            Schema {
+                pages: 0,
+                free: None,
+                full: None,
+                columns: vec![
+                    Column {
+                        name: "c0".to_string(),
+                        typ: Type::Int,
+                        nullable: true,
+                        default: None,
+                    },
+                    Column {
+                        name: "c1".to_string(),
+                        typ: Type::Int,
+                        nullable: true,
+                        default: None,
+                    },
+                    Column {
+                        name: "c2".to_string(),
+                        typ: Type::Int,
+                        nullable: true,
+                        default: None,
+                    },
+                    Column {
+                        name: "c3".to_string(),
+                        typ: Type::Int,
+                        nullable: true,
+                        default: None,
+                    },
+                    Column {
+                        name: "c4".to_string(),
+                        typ: Type::Int,
+                        nullable: true,
+                        default: None,
+                    },
+                    Column {
+                        name: "c5".to_string(),
+                        typ: Type::Int,
+                        nullable: true,
+                        default: None,
+                    },
+                    Column {
+                        name: "c6".to_string(),
+                        typ: Type::Int,
+                        nullable: true,
+                        default: None,
+                    },
+                    Column {
+                        name: "c7".to_string(),
+                        typ: Type::Int,
+                        nullable: true,
+                        default: None,
+                    },
+                    Column {
+                        name: "c8".to_string(),
+                        typ: Type::Int,
+                        nullable: true,
+                        default: None,
+                    },
+                ],
+            },
+            &PathBuf::new(),
+        );
 
         let mut buf = [0u8; PAGE_SIZE];
         let record = Record {
@@ -242,7 +259,7 @@ mod tests {
             ],
         };
 
-        record.save_into(&mut buf, 0, &schema).unwrap();
+        record.save_into(&mut buf, 0, &schema);
 
         log::info!("Test serializing. Buf: {:?}", &buf[..512]);
 

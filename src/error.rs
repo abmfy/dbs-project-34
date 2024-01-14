@@ -3,6 +3,7 @@
 use std::io::Error as IOError;
 use std::num::{ParseFloatError, ParseIntError};
 use std::result;
+use std::sync::{MutexGuard, PoisonError};
 
 use csv::Error as CsvError;
 use pest::error::Error as PestError;
@@ -10,8 +11,9 @@ use rustyline::error::ReadlineError;
 use serde_json::error::Error as SerdeError;
 use thiserror::Error;
 
+use crate::file::PageCache;
 use crate::parser::Rule;
-use crate::schema::{Value, Type};
+use crate::schema::{Type, Value};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -38,6 +40,8 @@ pub enum Error {
     ParseFloat(#[from] ParseFloatError),
     #[error("Int parse error: {0}")]
     ParseInt(#[from] ParseIntError),
+    #[error("Poison error: {0}")]
+    Poison(#[from] PoisonError<MutexGuard<'static, PageCache>>),
     #[error("Readline error: {0}")]
     Readline(#[from] ReadlineError),
     #[error("Serialization error: {0}")]

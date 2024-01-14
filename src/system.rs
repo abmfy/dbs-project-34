@@ -1,11 +1,16 @@
 //! Database system management.
 
-use std::fs;
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::fs::{self, File};
+use std::path::{Path, PathBuf};
+
+use csv::ReaderBuilder;
 
 use crate::error::{Error, Result};
-use crate::file::PageCache;
-use crate::schema::Schema;
+use crate::file::FS;
+use crate::record::Record;
+use crate::schema::{Schema, TableSchema, Value};
+use crate::table::Table;
 
 /// Database system manager.
 pub struct System {
@@ -15,8 +20,8 @@ pub struct System {
     db_name: Option<String>,
     /// Current selected database.
     db: Option<PathBuf>,
-    /// Cached paged filesystem.
-    fs: PageCache,
+    /// Mapping from table name to the table.
+    tables: HashMap<String, Table>,
 }
 
 impl System {
@@ -26,7 +31,7 @@ impl System {
             base,
             db_name: None,
             db: None,
-            fs: PageCache::new(),
+            tables: HashMap::new(),
         }
     }
 
@@ -55,7 +60,8 @@ impl System {
         }
 
         log::info!("Switching to database {}, flushing cache", name);
-        self.fs.clear();
+        FS.lock()?.clear();
+        self.tables.clear();
 
         self.db_name = Some(name.to_owned());
         self.db = Some(path);
@@ -120,7 +126,8 @@ impl System {
                 log::info!("Dropping current database. Flushing cache.");
                 self.db_name = None;
                 self.db = None;
-                self.fs.clear();
+                FS.lock()?.clear();
+                self.tables.clear();
             }
         }
 
@@ -131,6 +138,49 @@ impl System {
 
         log::info!("Database {} dropped", name);
         Ok(())
+    }
+
+    /// Open a table, hold its file descriptor and schema.
+    fn open_table(&mut self, name: &str) -> Result<Table> {
+        let db = self.db.as_ref().ok_or(Error::NoDatabaseSelected)?;
+        let table = db.join(name);
+
+        if !table.exists() {
+            log::error!("Table {} not found", name);
+            return Err(Error::TableNotFound(name.to_owned()));
+        }
+
+        let mut fs = FS.lock()?;
+
+        let fd = fs.open(&table.join("data.bin"))?;
+
+        let meta = table.join("meta.json");
+        let file = File::open(meta.clone())?;
+        let schema = serde_json::from_reader(file)?;
+
+        Ok(Table::new(fd, TableSchema::new(schema, &meta)))
+    }
+
+    /// Get a table for read.
+    fn get_table(&mut self, name: &str) -> Result<&Table> {
+        if self.tables.contains_key(name) {
+            return Ok(self.tables.get(name).unwrap());
+        }
+
+        let table = self.open_table(name)?;
+        self.tables.insert(name.to_owned(), table);
+        Ok(self.tables.get(name).unwrap())
+    }
+
+    /// Get a table for write.
+    fn get_table_mut(&mut self, name: &str) -> Result<&mut Table> {
+        if self.tables.contains_key(name) {
+            return Ok(self.tables.get_mut(name).unwrap());
+        }
+
+        let table = self.open_table(name)?;
+        self.tables.insert(name.to_owned(), table);
+        Ok(self.tables.get_mut(name).unwrap())
     }
 
     /// Get a list of tables in current database.
@@ -154,22 +204,12 @@ impl System {
     }
 
     /// Get the schema of a table.
-    pub fn get_table_schema(&mut self, name: &str) -> Result<Schema> {
+    pub fn get_table_schema(&mut self, name: &str) -> Result<&TableSchema> {
         log::info!("Getting schema of table {}", name);
 
-        let db = self.db.as_ref().ok_or(Error::NoDatabaseSelected)?;
-        let table = db.join(name);
+        let table = self.get_table(name)?;
 
-        if !table.exists() {
-            log::error!("Table {} not found", name);
-            return Err(Error::TableNotFound(name.to_owned()));
-        }
-
-        let meta = table.join("meta.json");
-        let file = fs::File::open(meta)?;
-        let schema = serde_json::from_reader(file)?;
-
-        Ok(schema)
+        Ok(table.get_schema())
     }
 
     /// Create a table.
@@ -186,9 +226,14 @@ impl System {
 
         fs::create_dir(table.clone())?;
 
+        let data = table.join("data.bin");
+        fs::File::create(data)?;
+
         let meta = table.join("meta.json");
         let mut file = fs::File::create(meta)?;
         serde_json::to_writer(&mut file, &schema)?;
+
+        self.open_table(name)?;
 
         Ok(())
     }
@@ -196,6 +241,12 @@ impl System {
     /// Drop a table.
     pub fn drop_table(&mut self, name: &str) -> Result<()> {
         log::info!("Dropping table {}", name);
+
+        // Writing back dirty pages in the cache.
+        if let Some(table) = self.tables.remove(name) {
+            let mut fs = FS.lock()?;
+            fs.close(table.get_fd())?;
+        }
 
         let db = self.db.as_ref().ok_or(Error::NoDatabaseSelected)?;
         let table = db.join(name);
@@ -208,6 +259,29 @@ impl System {
         fs::remove_dir_all(table)?;
 
         Ok(())
+    }
+
+    /// Load batched data into a table.
+    pub fn load_table(&mut self, name: &str, file: &Path) -> Result<usize> {
+        log::info!("Loading data into table {}", name);
+
+        let table = self.get_table_mut(name)?;
+
+        let mut count = 0;
+        let mut reader = ReaderBuilder::new().has_headers(false).from_path(file)?;
+        for result in reader.records() {
+            let record = result?;
+            log::info!("Loading record {record:?}");
+            let mut fields = vec![];
+            for (field, column) in record.iter().zip(table.get_schema().get_columns()) {
+                fields.push(Value::from(field, &column.typ)?);
+            }
+            let mut fs = FS.lock()?;
+            table.insert(&mut fs, Record::new(fields))?;
+            count += 1;
+        }
+
+        Ok(count)
     }
 }
 
