@@ -161,6 +161,6 @@ count_clause = { count ~ "(" ~ "*" ~ ")" }
 
 identifiers = { identifier ~ ("," ~ identifier)* }
 
-operator = { equal_or_assign | less_equal | greater_equal | less | greater | not_equal }
+operator = { less_equal | greater_equal | not_equal | less | greater | equal_or_assign }
 
 aggregator = { count | average | max | min | sum }
