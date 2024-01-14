@@ -91,7 +91,7 @@ impl Record {
                 for selector in selectors {
                     match selector {
                         Selector::Column(ColumnSelector(_, column)) => {
-                            fields.push(self.fields[schema.get_offset(column)].clone())
+                            fields.push(self.fields[schema.get_column_index(column)].clone())
                         }
                     }
                 }

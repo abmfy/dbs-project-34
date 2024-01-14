@@ -12,6 +12,7 @@ use prettytable::{format::consts::FORMAT_NO_LINESEP_WITH_TITLE, row, Row, Table}
 
 use crate::{
     error::{Error, Result},
+    record::Record,
     schema::{
         Column, ColumnSelector, Constraint, Expression, Field, Operator, Schema, Selector,
         Selectors, Type, Value, WhereClause,
@@ -184,6 +185,7 @@ fn parse_table_statement(
         Rule::drop_table_statement => parse_drop_table_statement(system, pair.into_inner()),
         Rule::desc_statement => parse_desc_statement(system, pair.into_inner()),
         Rule::load_statement => parse_load_statement(system, pair.into_inner()),
+        Rule::insert_statement => parse_insert_statement(system, pair.into_inner()),
         Rule::select_statement => parse_select_statement(system, pair.into_inner()),
         _ => unimplemented!(),
     }
@@ -760,4 +762,85 @@ fn parse_select_statement(
     }
 
     Ok((ret, QueryStat::Query(len)))
+}
+
+fn parse_value_list(pairs: Pairs<Rule>) -> Result<Record> {
+    let mut ret = vec![];
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::value => {
+                ret.push(parse_value(pair.into_inner().next().unwrap())?);
+            }
+            _ => continue,
+        }
+    }
+
+    Ok(Record { fields: ret })
+}
+
+fn parse_value_lists(pairs: Pairs<Rule>) -> Result<Vec<Record>> {
+    let mut ret = vec![];
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::value_list => {
+                ret.push(parse_value_list(pair.into_inner())?);
+            }
+            _ => continue,
+        }
+    }
+
+    Ok(ret)
+}
+
+fn parse_insert_statement(
+    system: &mut System,
+    statement: Pairs<Rule>,
+) -> Result<(Table, QueryStat)> {
+    log::info!("Parsing insert statement: {statement:?}");
+
+    let mut table = None;
+    let mut values = None;
+
+    for pair in statement {
+        match pair.as_rule() {
+            Rule::identifier => {
+                table = Some(pair.as_str());
+            }
+            Rule::value_lists => {
+                values = Some(parse_value_lists(pair.into_inner())?);
+            }
+            _ => continue,
+        }
+    }
+
+    let table = table.unwrap();
+    let values = values.unwrap();
+    let count = values.len();
+
+    let schema = system.get_table_schema(table)?;
+
+    for record in &values {
+        let record_len = record.fields.len();
+        let schema_len = schema.get_columns().len();
+        if record_len != schema_len {
+            return Err(Error::FieldCountMismatch(record_len, schema_len));
+        }
+        for (field, column) in record.fields.iter().zip(schema.get_columns()) {
+            if !column.nullable && field == &Value::Null {
+                return Err(Error::NotNullable(column.name.clone()));
+            }
+            if !field.check_type(&column.typ) {
+                return Err(Error::TypeMismatch(field.clone(), column.typ.clone()));
+            }
+        }
+    }
+
+    system.insert(table, values)?;
+
+    let mut ret = fresh_table();
+    ret.set_titles(row!["rows"]);
+    ret.add_row(row![count]);
+    Ok((ret, QueryStat::Update(count)))
 }

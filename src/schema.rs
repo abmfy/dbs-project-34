@@ -92,8 +92,8 @@ impl Display for Value {
         match self {
             Value::Null => write!(f, "NULL"),
             Value::Int(v) => write!(f, "{v}"),
-            Value::Float(v) => write!(f, "{v}"),
-            Value::Varchar(v) => write!(f, "{v}"),
+            Value::Float(v) => write!(f, "{v:.2}"),
+            Value::Varchar(v) => write!(f, "{}", v.trim_end_matches('\0')),
         }
     }
 }
@@ -372,6 +372,11 @@ impl TableSchema {
     /// Get a column by its name.
     pub fn get_column(&self, name: &str) -> &Column {
         &self.columns[self.column_map[name]]
+    }
+
+    /// Get the index of a column by its name.
+    pub fn get_column_index(&self, name: &str) -> usize {
+        self.column_map[name]
     }
 
     /// Get the maximum count of records available in a page.

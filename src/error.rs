@@ -36,9 +36,11 @@ pub enum Error {
     #[error("Multiple primary keys on table `{0}`")]
     MultiplePrimaryKeys(String),
 
+    #[error("Field count mismatch: {0} provided but {1} expected")]
+    FieldCountMismatch(usize, usize),
     #[error("Value `{0}` does not match type `{1}`")]
     TypeMismatch(Value, Type),
-    #[error("Column `{0}` must not be nullable")]
+    #[error("Field `{0}` must not be nullable")]
     NotNullable(String),
 
     #[error("CSV error: {0}")]

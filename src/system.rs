@@ -302,6 +302,21 @@ impl System {
 
         Ok(ret)
     }
+
+    /// Execute insert statement.
+    pub fn insert(&mut self, table: &str, records: Vec<Record>) -> Result<()> {
+        log::info!("Executing insert statement");
+
+        let table = self.get_table_mut(table)?;
+
+        let mut fs = FS.lock()?;
+
+        for record in records {
+            table.insert(&mut fs, record)?;
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
