@@ -46,7 +46,7 @@ impl Display for Type {
 }
 
 /// A value of a column.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Value {
     Null,
     Int(i32),
@@ -54,12 +54,28 @@ pub enum Value {
     Varchar(String),
 }
 
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Value::Null, Value::Null) => true,
+            (Value::Int(a), Value::Int(b)) => a == b,
+            (Value::Float(a), Value::Float(b)) => a == b,
+            (Value::Varchar(a), Value::Varchar(b)) => {
+                a.trim_end_matches('\0') == b.trim_end_matches('\0')
+            }
+            _ => false,
+        }
+    }
+}
+
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match (self, other) {
             (Value::Int(a), Value::Int(b)) => a.partial_cmp(b),
             (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
-            (Value::Varchar(a), Value::Varchar(b)) => a.partial_cmp(b),
+            (Value::Varchar(a), Value::Varchar(b)) => a
+                .trim_end_matches('\0')
+                .partial_cmp(b.trim_end_matches('\0')),
             _ => None,
         }
     }
@@ -186,6 +202,7 @@ pub enum Selectors {
 
 /// Column selector in the form table.column,
 /// where table part is optional
+#[derive(Debug)]
 pub struct ColumnSelector(pub Option<String>, pub String);
 
 /// Query selector.
@@ -208,6 +225,7 @@ impl Display for Selector {
 }
 
 /// SQL operator.
+#[derive(Debug)]
 pub enum Operator {
     Eq,
     Ne,
@@ -218,6 +236,7 @@ pub enum Operator {
 }
 
 /// SQL expression.
+#[derive(Debug)]
 pub enum Expression {
     Value(Value),
     Column(ColumnSelector),

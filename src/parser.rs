@@ -87,7 +87,7 @@ fn parse_identifiers(pairs: Pairs<Rule>) -> Result<Vec<&str>> {
 }
 
 fn parse_db_statement(system: &mut System, statement: Pairs<Rule>) -> Result<(Table, QueryStat)> {
-    log::info!("Parsing db statement: {statement:?}");
+    log::debug!("Parsing db statement: {statement:?}");
 
     let pair = statement.into_iter().next().unwrap();
     match pair.as_rule() {
@@ -104,7 +104,7 @@ fn parse_create_db_statement(
     system: &mut System,
     statement: Pairs<Rule>,
 ) -> Result<(Table, QueryStat)> {
-    log::info!("Parsing create db statement: {statement:?}");
+    log::debug!("Parsing create db statement: {statement:?}");
 
     let name = statement.into_iter().next().unwrap().as_str();
 
@@ -117,7 +117,7 @@ fn parse_drop_db_statement(
     system: &mut System,
     statement: Pairs<Rule>,
 ) -> Result<(Table, QueryStat)> {
-    log::info!("Parsing drop db statement: {statement:?}");
+    log::debug!("Parsing drop db statement: {statement:?}");
 
     let name = statement.into_iter().next().unwrap().as_str();
 
@@ -130,7 +130,7 @@ fn parse_show_dbs_statement(
     system: &mut System,
     statement: Pairs<Rule>,
 ) -> Result<(Table, QueryStat)> {
-    log::info!("Parsing show dbs statement: {statement:?}");
+    log::debug!("Parsing show dbs statement: {statement:?}");
 
     let mut ret = fresh_table();
     ret.set_titles(row!["DATABASES"]);
@@ -148,7 +148,7 @@ fn parse_use_db_statement(
     system: &mut System,
     statement: Pairs<Rule>,
 ) -> Result<(Table, QueryStat)> {
-    log::info!("Parsing use db statement: {statement:?}");
+    log::debug!("Parsing use db statement: {statement:?}");
 
     let name = statement.into_iter().next().unwrap().as_str();
 
@@ -161,7 +161,7 @@ fn parse_show_tables_statement(
     system: &mut System,
     statement: Pairs<Rule>,
 ) -> Result<(Table, QueryStat)> {
-    log::info!("Parsing show tables statement: {statement:?}");
+    log::debug!("Parsing show tables statement: {statement:?}");
 
     let mut ret = fresh_table();
     ret.set_titles(row!["TABLES"]);
@@ -360,7 +360,7 @@ fn parse_create_table_statement(
     system: &mut System,
     statement: Pairs<Rule>,
 ) -> Result<(Table, QueryStat)> {
-    log::info!("Parsing create table statement: {statement:?}");
+    log::debug!("Parsing create table statement: {statement:?}");
 
     let mut name = None;
     let mut fields = None;
@@ -449,7 +449,7 @@ fn parse_drop_table_statement(
     system: &mut System,
     statement: Pairs<Rule>,
 ) -> Result<(Table, QueryStat)> {
-    log::info!("Parsing drop table statement: {statement:?}");
+    log::debug!("Parsing drop table statement: {statement:?}");
 
     let name = statement.into_iter().next().unwrap().as_str();
 
@@ -459,7 +459,7 @@ fn parse_drop_table_statement(
 }
 
 fn parse_desc_statement(system: &mut System, statement: Pairs<Rule>) -> Result<(Table, QueryStat)> {
-    log::info!("Parsing desc statement: {statement:?}");
+    log::debug!("Parsing desc statement: {statement:?}");
 
     let name = statement.into_iter().next().unwrap().as_str();
 
@@ -483,7 +483,7 @@ fn parse_desc_statement(system: &mut System, statement: Pairs<Rule>) -> Result<(
 }
 
 fn parse_load_statement(system: &mut System, statement: Pairs<Rule>) -> Result<(Table, QueryStat)> {
-    log::info!("Parsing load statement: {statement:?}");
+    log::debug!("Parsing load statement: {statement:?}");
 
     let mut ret = fresh_table();
     ret.set_titles(row!["rows"]);
@@ -709,7 +709,7 @@ fn parse_select_statement(
     system: &mut System,
     statement: Pairs<Rule>,
 ) -> Result<(Table, QueryStat)> {
-    log::info!("Parsing select statement: {statement:?}");
+    log::debug!("Parsing select statement: {statement:?}");
 
     let mut selectors = None;
     let mut tables = None;
@@ -798,7 +798,7 @@ fn parse_insert_statement(
     system: &mut System,
     statement: Pairs<Rule>,
 ) -> Result<(Table, QueryStat)> {
-    log::info!("Parsing insert statement: {statement:?}");
+    log::debug!("Parsing insert statement: {statement:?}");
 
     let mut table = None;
     let mut values = None;
