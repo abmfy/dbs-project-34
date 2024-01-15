@@ -60,7 +60,7 @@ impl System {
         }
 
         log::info!("Switching to database {}, flushing cache", name);
-        FS.lock()?.clear();
+        FS.lock()?.clear()?;
         self.tables.clear();
 
         self.db_name = Some(name.to_owned());
@@ -126,7 +126,7 @@ impl System {
                 log::info!("Dropping current database. Flushing cache.");
                 self.db_name = None;
                 self.db = None;
-                FS.lock()?.clear();
+                FS.lock()?.clear()?;
                 self.tables.clear();
             }
         }
@@ -233,7 +233,8 @@ impl System {
         let mut file = fs::File::create(meta)?;
         serde_json::to_writer(&mut file, &schema)?;
 
-        self.open_table(name)?;
+        let table = self.open_table(name)?;
+        self.tables.insert(name.to_owned(), table);
 
         Ok(())
     }

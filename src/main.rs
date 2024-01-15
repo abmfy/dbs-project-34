@@ -29,7 +29,7 @@ impl Drop for Cleaner {
     fn drop(&mut self) {
         log::info!("Shutting down");
         let mut fs = FS.lock().expect("Failed to obtain lock on page cache");
-        fs.write_back().expect("Failed to write back page cache");
+        fs.clear().expect("Failed to write back page cache");
     }
 }
 

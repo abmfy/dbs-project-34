@@ -117,6 +117,7 @@ impl PageCache {
     pub fn open(&mut self, name: &Path) -> io::Result<Uuid> {
         let file = File::open(name)?;
         let id = file.id;
+        log::info!("Opening file: {name:?} is {id}");
         self.files.insert(file.id, file);
         Ok(id)
     }
@@ -142,18 +143,14 @@ impl PageCache {
     }
 
     /// Close all files and clear the cache.
-    pub fn clear(&mut self) {
-        self.files.clear();
-        self.cache.clear();
-    }
-
-    /// Write back cache into disk.
-    pub fn write_back(&mut self) -> io::Result<()> {
+    pub fn clear(&mut self) -> io::Result<()> {
         log::info!("Writing back page cache");
         for ((file, page), page_buf) in self.cache.iter_mut() {
             let file = self.files.get_mut(file).expect("File descriptor not found");
             page_buf.write_back(file, *page)?;
         }
+        self.files.clear();
+        self.cache.clear();
         Ok(())
     }
 
@@ -302,7 +299,7 @@ mod tests {
         }
 
         // Force write back
-        cache.write_back().unwrap();
+        cache.clear().unwrap();
         let mut cache = PageCache::new();
         let fd = cache.open(Path::new("test_page_cache")).unwrap();
         log::info!("Opening file with fd {fd}");
