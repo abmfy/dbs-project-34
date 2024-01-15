@@ -929,7 +929,7 @@ fn parse_delete_statement(
     log::debug!("Parsing delete statement: {statement:?}");
 
     let mut table = None;
-    let mut where_clauses = None;
+    let mut where_clauses = vec![];
 
     for pair in statement {
         match pair.as_rule() {
@@ -937,14 +937,13 @@ fn parse_delete_statement(
                 table = Some(pair.as_str());
             }
             Rule::where_and_clause => {
-                where_clauses = Some(parse_where_and_clause(pair.into_inner())?);
+                where_clauses = parse_where_and_clause(pair.into_inner())?;
             }
             _ => continue,
         }
     }
 
     let table = table.unwrap();
-    let where_clauses = where_clauses.unwrap();
 
     let mut ret = fresh_table();
     ret.set_titles(row!["rows"]);
