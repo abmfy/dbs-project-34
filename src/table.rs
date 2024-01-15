@@ -7,7 +7,7 @@ use crate::config::LINK_SIZE;
 use crate::error::Result;
 use crate::file::PageCache;
 use crate::record::Record;
-use crate::schema::{Selectors, TableSchema, WhereClause};
+use crate::schema::{Selectors, TableSchema, WhereClause, SetPair};
 
 /// A table.
 pub struct Table {
@@ -156,7 +156,7 @@ impl Table {
             let page_buf = fs.get(self.fd, page_id)?;
             let page = TablePage::new(self, page_buf);
 
-            for record in &page {
+            for (record, _) in &page {
                 if where_clauses
                     .iter()
                     .all(|clause| clause.matches(&record, &self.schema))
@@ -188,6 +188,42 @@ impl Table {
         }
 
         Ok(())
+    }
+
+    /// Update records in the table.
+    pub fn update<'a>(
+        &'a mut self,
+        fs: &'a mut PageCache,
+        set_pairs: &[SetPair],
+        where_clauses: &[WhereClause],
+    ) -> Result<usize> {
+        log::debug!("Updating {set_pairs:?} where {where_clauses:?}");
+
+        let mut updated = 0usize;
+        for page_id in 0..self.schema.get_pages() {
+            let page_buf = fs.get_mut(self.fd, page_id)?;
+            let mut page = TablePageMut::new(self, page_buf);
+
+            let mut to_update = vec![];
+
+            for (mut record, offset) in &page {
+                if where_clauses
+                    .iter()
+                    .all(|clause| clause.matches(&record, &self.schema))
+                {
+                    if record.update(set_pairs, &self.schema) {
+                        updated += 1;
+                        to_update.push((record, offset));
+                    }
+                }
+            }
+
+            for (record, offset) in to_update {
+                page.update(record, offset, &self.schema);
+            }
+        }
+
+        Ok(updated)
     }
 }
 
@@ -308,6 +344,15 @@ impl<'a> LinkedPage<'a> for TablePage<'a> {
     }
 }
 
+impl<'a> IntoIterator for &'a TablePage<'a> {
+    type Item = (Record, usize);
+    type IntoIter = PageIterator<'a, TablePage<'a>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 /// A writable page in a table.
 pub struct TablePageMut<'a> {
     /// The table the page belongs to.
@@ -394,6 +439,11 @@ impl<'a> TablePageMut<'a> {
 
         self.free.is_some()
     }
+
+    /// Update a record in the page.
+    pub fn update(&mut self, record: Record, offset: usize, schema: &TableSchema) {
+        record.save_into(self.buf, offset, schema);
+    }
 }
 
 impl<'a> LinkedPage<'a> for TablePageMut<'a> {
@@ -422,9 +472,9 @@ impl<'a> LinkedPage<'a> for TablePageMut<'a> {
     }
 }
 
-impl<'a> IntoIterator for &'a TablePage<'a> {
-    type Item = Record;
-    type IntoIter = PageIterator<'a, TablePage<'a>>;
+impl<'a> IntoIterator for &'a TablePageMut<'a> {
+    type Item = (Record, usize);
+    type IntoIter = PageIterator<'a, TablePageMut<'a>>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
@@ -456,7 +506,7 @@ impl<'a, T: LinkedPage<'a>> PageIterator<'a, T> {
 }
 
 impl<'a, T: LinkedPage<'a>> Iterator for PageIterator<'a, T> {
-    type Item = Record;
+    type Item = (Record, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.slot < self.page.get_max_records() {
@@ -469,8 +519,9 @@ impl<'a, T: LinkedPage<'a>> Iterator for PageIterator<'a, T> {
                 self.offset,
                 &self.page.get_table().schema,
             );
+            let offset = self.offset;
             self.inc();
-            return Some(record);
+            return Some((record, offset));
         }
 
         None

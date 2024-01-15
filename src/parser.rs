@@ -15,7 +15,7 @@ use crate::{
     record::Record,
     schema::{
         Column, ColumnSelector, Constraint, Expression, Field, Operator, Schema, Selector,
-        Selectors, Type, Value, WhereClause,
+        Selectors, Type, Value, WhereClause, SetPair,
     },
     stat::QueryStat,
     system::System,
@@ -186,6 +186,7 @@ fn parse_table_statement(
         Rule::desc_statement => parse_desc_statement(system, pair.into_inner()),
         Rule::load_statement => parse_load_statement(system, pair.into_inner()),
         Rule::insert_statement => parse_insert_statement(system, pair.into_inner()),
+        Rule::update_statement => parse_update_statement(system, pair.into_inner()),
         Rule::select_statement => parse_select_statement(system, pair.into_inner()),
         _ => unimplemented!(),
     }
@@ -843,4 +844,79 @@ fn parse_insert_statement(
     ret.set_titles(row!["rows"]);
     ret.add_row(row![count]);
     Ok((ret, QueryStat::Update(count)))
+}
+
+fn parse_set_pair(pairs: Pairs<Rule>) -> Result<SetPair> {
+    let mut name = None;
+    let mut value = None;
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::identifier => {
+                name = Some(pair.as_str());
+            }
+            Rule::value => {
+                value = Some(parse_value(pair.into_inner().next().unwrap())?);
+            }
+            _ => continue,
+        }
+    }
+
+    let name = name.unwrap();
+    let value = value.unwrap();
+
+    Ok(SetPair(name.to_owned(), value))
+}
+
+fn parse_set_clause(pairs: Pairs<Rule>) -> Result<Vec<SetPair>> {
+    let mut ret = vec![];
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::set_pair => {
+                ret.push(parse_set_pair(pair.into_inner())?);
+            }
+            _ => continue,
+        }
+    }
+
+    Ok(ret)
+}
+
+fn parse_update_statement(
+    system: &mut System,
+    statement: Pairs<Rule>,
+) -> Result<(Table, QueryStat)> {
+    log::debug!("Parsing update statement: {statement:?}");
+
+    let mut table = None;
+    let mut set_pairs = None;
+    let mut where_clauses = None;
+
+    for pair in statement {
+        match pair.as_rule() {
+            Rule::identifier => {
+                table = Some(pair.as_str());
+            }
+            Rule::set_clause => {
+                set_pairs = Some(parse_set_clause(pair.into_inner())?);
+            }
+            Rule::where_and_clause => {
+                where_clauses = Some(parse_where_and_clause(pair.into_inner())?);
+            }
+            _ => continue,
+        }
+    }
+
+    let table = table.unwrap();
+    let set_pairs = set_pairs.unwrap();
+    let where_clauses = where_clauses.unwrap();
+
+    let mut ret = fresh_table();
+    ret.set_titles(row!["rows"]);
+
+    let rows: usize = system.update(table, &set_pairs, &where_clauses)?;
+    ret.add_row(row![rows]);
+
+    Ok((ret, QueryStat::Update(rows)))
 }

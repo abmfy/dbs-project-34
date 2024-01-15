@@ -224,6 +224,10 @@ impl Display for Selector {
     }
 }
 
+/// A key-value pair in set clause.
+#[derive(Debug)]
+pub struct SetPair(pub String, pub Value);
+
 /// SQL operator.
 #[derive(Debug)]
 pub enum Operator {
@@ -243,6 +247,7 @@ pub enum Expression {
 }
 
 /// Where clause.
+#[derive(Debug)]
 pub enum WhereClause {
     OperatorExpression(ColumnSelector, Operator, Expression),
 }

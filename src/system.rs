@@ -9,7 +9,7 @@ use csv::ReaderBuilder;
 use crate::error::{Error, Result};
 use crate::file::FS;
 use crate::record::Record;
-use crate::schema::{Schema, Selectors, TableSchema, Value, WhereClause};
+use crate::schema::{Schema, Selectors, TableSchema, Value, WhereClause, SetPair};
 use crate::table::Table;
 
 /// Database system manager.
@@ -316,6 +316,18 @@ impl System {
         }
 
         Ok(())
+    }
+
+    /// Execute update statement.
+    pub fn update(&mut self, table: &str, set_pairs: &[SetPair], where_clauses: &[WhereClause]) -> Result<usize> {
+        log::info!("Executing update statement");
+
+        let table = self.get_table_mut(table)?;
+
+        let mut fs = FS.lock()?;
+        let ret = table.update(&mut fs, set_pairs, where_clauses)?;
+
+        Ok(ret)
     }
 }
 

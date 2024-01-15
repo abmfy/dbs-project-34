@@ -2,7 +2,7 @@
 
 use bit_set::BitSet;
 
-use crate::schema::{ColumnSelector, Selector, Selectors, TableSchema, Type, Value};
+use crate::schema::{ColumnSelector, Selector, Selectors, TableSchema, Type, Value, SetPair};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record {
@@ -99,6 +99,25 @@ impl Record {
             }
         }
     }
+
+    /// Update some fields in the record.
+    /// 
+    /// # Returns
+    /// 
+    /// Return true if the record is updated.
+    pub fn update(&mut self, set_pairs: &[SetPair], schema: &TableSchema) -> bool {
+        let mut updated = false;
+        for SetPair(column, value) in set_pairs {
+            let index = schema.get_column_index(column);
+            let old_value = &self.fields[index];
+            if value != old_value {
+                self.fields[index] = value.clone();
+                updated = true;
+            }
+        }
+        updated
+    }
+    
 }
 
 #[cfg(test)]
