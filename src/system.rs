@@ -297,6 +297,11 @@ impl System {
 
         let table = self.get_table(tables[0])?;
 
+        selectors.check(table.get_schema())?;
+        for where_clause in where_clauses {
+            where_clause.check(table.get_schema())?
+        }
+
         let mut fs = FS.lock()?;
         let ret = table.select(&mut fs, selectors, where_clauses)?;
 
@@ -308,6 +313,11 @@ impl System {
         log::info!("Executing insert statement");
 
         let table = self.get_table_mut(table)?;
+
+        let schema = table.get_schema();
+        for record in &records {
+            record.check(schema)?;
+        }
 
         let mut fs = FS.lock()?;
 
@@ -329,6 +339,13 @@ impl System {
 
         let table = self.get_table_mut(table)?;
 
+        for set_pair in set_pairs {
+            set_pair.check(table.get_schema())?;
+        }
+        for where_clause in where_clauses {
+            where_clause.check(table.get_schema())?
+        }
+
         let mut fs = FS.lock()?;
         let ret = table.update(&mut fs, set_pairs, where_clauses)?;
 
@@ -340,6 +357,10 @@ impl System {
         log::info!("Executing delete statement");
 
         let table = self.get_table_mut(table)?;
+
+        for where_clause in where_clauses {
+            where_clause.check(table.get_schema())?
+        }
 
         let mut fs = FS.lock()?;
         let ret = table.delete(&mut fs, where_clauses)?;

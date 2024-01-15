@@ -200,6 +200,27 @@ pub enum Selectors {
     Some(Vec<Selector>),
 }
 
+impl Selectors {
+    /// Check the selectors against a table schema.
+    pub fn check(&self, schema: &TableSchema) -> Result<()> {
+        match self {
+            Selectors::All => Ok(()),
+            Selectors::Some(selectors) => {
+                for selector in selectors {
+                    match selector {
+                        Selector::Column(ColumnSelector(_, column)) => {
+                            if !schema.has_column(column) {
+                                return Err(Error::ColumnNotFound(column.clone()));
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Column selector in the form table.column,
 /// where table part is optional
 #[derive(Debug)]
@@ -228,6 +249,22 @@ impl Display for Selector {
 #[derive(Debug)]
 pub struct SetPair(pub String, pub Value);
 
+impl SetPair {
+    /// Check the set pair against a table schema.
+    pub fn check(&self, schema: &TableSchema) -> Result<()> {
+        let SetPair(column, value) = &self;
+        if !schema.has_column(&column) {
+            return Err(Error::ColumnNotFound(column.to_owned()));
+        }
+        let column = schema.get_column(&column);
+        let typ = &column.typ;
+        if !value.check_type(typ) {
+            return Err(Error::TypeMismatch(value.clone(), typ.clone()));
+        }
+        Ok(())
+    }
+}
+
 /// SQL operator.
 #[derive(Debug)]
 pub enum Operator {
@@ -253,6 +290,26 @@ pub enum WhereClause {
 }
 
 impl WhereClause {
+    /// Check the where clause against a table schema.
+    pub fn check(&self, schema: &TableSchema) -> Result<()> {
+        match self {
+            WhereClause::OperatorExpression(ColumnSelector(_, column), _, expr) => {
+                if !schema.has_column(column) {
+                    return Err(Error::ColumnNotFound(column.clone()));
+                }
+                match expr {
+                    Expression::Value(_) => Ok(()),
+                    Expression::Column(ColumnSelector(_, column)) => {
+                        if !schema.has_column(column) {
+                            return Err(Error::ColumnNotFound(column.clone()));
+                        }
+                        Ok(())
+                    }
+                }
+            }
+        }
+    }
+
     /// Check if the where clause matches a record.
     pub fn matches(&self, record: &Record, schema: &TableSchema) -> bool {
         match self {
@@ -381,6 +438,11 @@ impl TableSchema {
     /// Get the length of a record.
     pub fn get_record_size(&self) -> usize {
         self.record_size
+    }
+
+    /// Check whether a given column is in a table.
+    pub fn has_column(&self, name: &str) -> bool {
+        self.column_map.contains_key(name)
     }
 
     /// Return a reference to column information.

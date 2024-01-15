@@ -152,18 +152,23 @@ impl Table {
     ) -> Result<Vec<Record>> {
         let mut records = Vec::new();
 
+        // log::info!("{}", self.schema.get_pages());
+
         for page_id in 0..self.schema.get_pages() {
             let page_buf = fs.get(self.fd, page_id)?;
             let page = TablePage::new(self, page_buf);
 
+            // let mut record_count = 0;
             for (record, _, _) in &page {
                 if where_clauses
                     .iter()
                     .all(|clause| clause.matches(&record, &self.schema))
                 {
+                    // record_count += 1;
                     records.push(record.select(selector, &self.schema));
                 }
             }
+            // log::info!("Page {page_id} has {record_count} records");
         }
 
         Ok(records)
@@ -210,11 +215,10 @@ impl Table {
                 if where_clauses
                     .iter()
                     .all(|clause| clause.matches(&record, &self.schema))
+                    && record.update(set_pairs, &self.schema)
                 {
-                    if record.update(set_pairs, &self.schema) {
-                        updated += 1;
-                        to_update.push((record, offset));
-                    }
+                    updated += 1;
+                    to_update.push((record, offset));
                 }
             }
 
@@ -227,7 +231,11 @@ impl Table {
     }
 
     /// Delete records from the table.
-    pub fn delete<'a>(&'a mut self, fs: &'a mut PageCache, where_clauses: &[WhereClause]) -> Result<usize> {
+    pub fn delete<'a>(
+        &'a mut self,
+        fs: &'a mut PageCache,
+        where_clauses: &[WhereClause],
+    ) -> Result<usize> {
         log::debug!("Deleting where {where_clauses:?}");
 
         let mut deleted = 0usize;
@@ -256,7 +264,7 @@ impl Table {
             free_page_id = page.get_next();
         }
 
-        let mut full_page_id = self.schema.get_free();
+        let mut full_page_id = self.schema.get_full();
         let mut to_free = vec![];
         while let Some(page_id) = full_page_id {
             let page_buf = fs.get_mut(self.fd, page_id)?;

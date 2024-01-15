@@ -2,6 +2,7 @@
 
 use bit_set::BitSet;
 
+use crate::error::{Error, Result};
 use crate::schema::{ColumnSelector, Selector, Selectors, SetPair, TableSchema, Type, Value};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -13,6 +14,27 @@ impl Record {
     /// Create a new record.
     pub fn new(fields: Vec<Value>) -> Self {
         Self { fields }
+    }
+
+    /// Check the record against a schema.
+    pub fn check(&self, schema: &TableSchema) -> Result<()> {
+        let provided = self.fields.len();
+        let expected = schema.get_columns().len();
+        if provided != expected {
+            return Err(Error::FieldCountMismatch(provided, expected));
+        }
+
+        for (i, column) in schema.get_columns().iter().enumerate() {
+            let value = &self.fields[i];
+            if value == &Value::Null && !column.nullable {
+                return Err(Error::NotNullable(column.name.clone()));
+            }
+            if !value.check_type(&column.typ) {
+                return Err(Error::TypeMismatch(value.clone(), column.typ.clone()));
+            }
+        }
+
+        Ok(())
     }
 
     /// Deserialize a record from a buffer.
