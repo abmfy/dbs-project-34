@@ -7,7 +7,7 @@ use crate::config::LINK_SIZE;
 use crate::error::Result;
 use crate::file::PageCache;
 use crate::record::Record;
-use crate::schema::{Selectors, TableSchema, WhereClause, SetPair};
+use crate::schema::{Selectors, SetPair, TableSchema, WhereClause};
 
 /// A table.
 pub struct Table {
@@ -156,7 +156,7 @@ impl Table {
             let page_buf = fs.get(self.fd, page_id)?;
             let page = TablePage::new(self, page_buf);
 
-            for (record, _) in &page {
+            for (record, _, _) in &page {
                 if where_clauses
                     .iter()
                     .all(|clause| clause.matches(&record, &self.schema))
@@ -206,7 +206,7 @@ impl Table {
 
             let mut to_update = vec![];
 
-            for (mut record, offset) in &page {
+            for (mut record, _, offset) in &page {
                 if where_clauses
                     .iter()
                     .all(|clause| clause.matches(&record, &self.schema))
@@ -224,6 +224,73 @@ impl Table {
         }
 
         Ok(updated)
+    }
+
+    /// Delete records from the table.
+    pub fn delete<'a>(&'a mut self, fs: &'a mut PageCache, where_clauses: &[WhereClause]) -> Result<usize> {
+        log::debug!("Deleting where {where_clauses:?}");
+
+        let mut deleted = 0usize;
+
+        let mut free_page_id = self.schema.get_free();
+        while let Some(page_id) = free_page_id {
+            let page_buf = fs.get_mut(self.fd, page_id)?;
+            let mut page = TablePageMut::new(self, page_buf);
+
+            let mut to_delete = vec![];
+
+            for (record, slot, _) in &page {
+                if where_clauses
+                    .iter()
+                    .all(|clause| clause.matches(&record, &self.schema))
+                {
+                    deleted += 1;
+                    to_delete.push(slot);
+                }
+            }
+
+            for slot in to_delete {
+                page.free(slot);
+            }
+
+            free_page_id = page.get_next();
+        }
+
+        let mut full_page_id = self.schema.get_free();
+        let mut to_free = vec![];
+        while let Some(page_id) = full_page_id {
+            let page_buf = fs.get_mut(self.fd, page_id)?;
+            let mut page = TablePageMut::new(self, page_buf);
+
+            let mut to_delete = vec![];
+
+            for (record, slot, _) in &page {
+                if where_clauses
+                    .iter()
+                    .all(|clause| clause.matches(&record, &self.schema))
+                {
+                    deleted += 1;
+                    // If the page is full, it will be marked
+                    // as having free space due to this deletion.
+                    if to_delete.is_empty() {
+                        to_free.push(page_id);
+                    }
+                    to_delete.push(slot);
+                }
+            }
+
+            for slot in to_delete {
+                page.free(slot);
+            }
+
+            full_page_id = page.get_next();
+        }
+
+        for page_id in to_free {
+            self.free_page(fs, page_id)?;
+        }
+
+        Ok(deleted)
     }
 }
 
@@ -345,7 +412,7 @@ impl<'a> LinkedPage<'a> for TablePage<'a> {
 }
 
 impl<'a> IntoIterator for &'a TablePage<'a> {
-    type Item = (Record, usize);
+    type Item = (Record, usize, usize);
     type IntoIter = PageIterator<'a, TablePage<'a>>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -473,7 +540,7 @@ impl<'a> LinkedPage<'a> for TablePageMut<'a> {
 }
 
 impl<'a> IntoIterator for &'a TablePageMut<'a> {
-    type Item = (Record, usize);
+    type Item = (Record, usize, usize);
     type IntoIter = PageIterator<'a, TablePageMut<'a>>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -506,7 +573,7 @@ impl<'a, T: LinkedPage<'a>> PageIterator<'a, T> {
 }
 
 impl<'a, T: LinkedPage<'a>> Iterator for PageIterator<'a, T> {
-    type Item = (Record, usize);
+    type Item = (Record, usize, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.slot < self.page.get_max_records() {
@@ -519,9 +586,10 @@ impl<'a, T: LinkedPage<'a>> Iterator for PageIterator<'a, T> {
                 self.offset,
                 &self.page.get_table().schema,
             );
+            let slot = self.slot;
             let offset = self.offset;
             self.inc();
-            return Some((record, offset));
+            return Some((record, slot, offset));
         }
 
         None

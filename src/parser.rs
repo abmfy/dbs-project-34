@@ -15,7 +15,7 @@ use crate::{
     record::Record,
     schema::{
         Column, ColumnSelector, Constraint, Expression, Field, Operator, Schema, Selector,
-        Selectors, Type, Value, WhereClause, SetPair,
+        Selectors, SetPair, Type, Value, WhereClause,
     },
     stat::QueryStat,
     system::System,
@@ -186,6 +186,7 @@ fn parse_table_statement(
         Rule::desc_statement => parse_desc_statement(system, pair.into_inner()),
         Rule::load_statement => parse_load_statement(system, pair.into_inner()),
         Rule::insert_statement => parse_insert_statement(system, pair.into_inner()),
+        Rule::delete_statement => parse_delete_statement(system, pair.into_inner()),
         Rule::update_statement => parse_update_statement(system, pair.into_inner()),
         Rule::select_statement => parse_select_statement(system, pair.into_inner()),
         _ => unimplemented!(),
@@ -916,6 +917,39 @@ fn parse_update_statement(
     ret.set_titles(row!["rows"]);
 
     let rows: usize = system.update(table, &set_pairs, &where_clauses)?;
+    ret.add_row(row![rows]);
+
+    Ok((ret, QueryStat::Update(rows)))
+}
+
+fn parse_delete_statement(
+    system: &mut System,
+    statement: Pairs<Rule>,
+) -> Result<(Table, QueryStat)> {
+    log::debug!("Parsing delete statement: {statement:?}");
+
+    let mut table = None;
+    let mut where_clauses = None;
+
+    for pair in statement {
+        match pair.as_rule() {
+            Rule::identifier => {
+                table = Some(pair.as_str());
+            }
+            Rule::where_and_clause => {
+                where_clauses = Some(parse_where_and_clause(pair.into_inner())?);
+            }
+            _ => continue,
+        }
+    }
+
+    let table = table.unwrap();
+    let where_clauses = where_clauses.unwrap();
+
+    let mut ret = fresh_table();
+    ret.set_titles(row!["rows"]);
+
+    let rows: usize = system.delete(table, &where_clauses)?;
     ret.add_row(row![rows]);
 
     Ok((ret, QueryStat::Update(rows)))
