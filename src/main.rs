@@ -23,11 +23,14 @@ use system::System;
 use crate::stat::QueryStat;
 
 /// Write back page cache and shutdown.
-fn exit() -> Result<()> {
-    log::info!("Shutting down");
-    let mut fs = FS.lock()?;
-    fs.write_back()?;
-    Ok(())
+struct Cleaner;
+
+impl Drop for Cleaner {
+    fn drop(&mut self) {
+        log::info!("Shutting down");
+        let mut fs = FS.lock().expect("Failed to obtain lock on page cache");
+        fs.write_back().expect("Failed to write back page cache");
+    }
 }
 
 fn batch_main(mut system: System) -> Result<()> {
@@ -67,7 +70,7 @@ fn batch_main(mut system: System) -> Result<()> {
         }
     }
 
-    exit()
+    Ok(())
 }
 
 fn shell_main(mut system: System) -> Result<()> {
@@ -163,10 +166,12 @@ fn shell_main(mut system: System) -> Result<()> {
 
     rl.save_history(SHELL_HISTORY)?;
 
-    exit()
+    Ok(())
 }
 
 fn main() -> Result<()> {
+    let _cleaner = Cleaner;
+
     setup::init_logging();
     let config = setup::init_config();
 
