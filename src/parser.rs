@@ -12,14 +12,23 @@ use prettytable::{format::consts::FORMAT_NO_LINESEP_WITH_TITLE, row, Row, Table}
 
 use crate::{
     error::{Error, Result},
-    record::Record,
+    record::{Record, RecordSchema},
     schema::{
         Column, ColumnSelector, Constraint, Expression, Field, Operator, Schema, Selector,
         Selectors, SetPair, Type, Value, WhereClause,
     },
-    stat::QueryStat,
     system::System,
 };
+
+/// Statistics about the query result.
+pub enum QueryStat {
+    /// Number of rows in the result.
+    Query(usize),
+    /// Number of rows affected.
+    Update(usize),
+    /// Description of a table.
+    Desc(Vec<Constraint>),
+}
 
 #[derive(Parser)]
 #[grammar = "sql.pest"]
@@ -778,7 +787,7 @@ fn parse_value_list(pairs: Pairs<Rule>) -> Result<Record> {
         }
     }
 
-    Ok(Record { fields: ret })
+    Ok(Record::new(ret))
 }
 
 fn parse_value_lists(pairs: Pairs<Rule>) -> Result<Vec<Record>> {

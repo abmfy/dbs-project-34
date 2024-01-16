@@ -1,14 +1,15 @@
 mod config;
 mod error;
 mod file;
+mod index;
 mod parser;
 mod record;
 mod schema;
 mod setup;
-mod stat;
 mod system;
 mod table;
 
+use std::fs;
 use std::io;
 use std::time::Instant;
 
@@ -17,10 +18,8 @@ use rustyline::{config::Configurer, error::ReadlineError, DefaultEditor};
 use config::SHELL_HISTORY;
 use error::Result;
 use file::FS;
-use parser::parse;
+use parser::{parse, QueryStat};
 use system::System;
-
-use crate::stat::QueryStat;
 
 /// Write back page cache and shutdown.
 struct Cleaner;
@@ -179,7 +178,7 @@ fn main() -> Result<()> {
     if config.init {
         if config.path.exists() {
             log::info!("Removing database directory");
-            std::fs::remove_dir_all(&config.path)?;
+            fs::remove_dir_all(&config.path)?;
         }
         return Ok(());
     }
@@ -187,7 +186,7 @@ fn main() -> Result<()> {
     // Create database directory if it doesn't exist.
     if !config.path.exists() {
         log::info!("Creating database directory");
-        std::fs::create_dir_all(&config.path)?;
+        fs::create_dir_all(&config.path)?;
     }
 
     let mut system = system::System::new(config.path.clone());

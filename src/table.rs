@@ -1,4 +1,13 @@
 //! Table management.
+//!
+//! The table pages are organized into two linked lists:
+//! free and full. Free pages are those with free space,
+//! and full pages are those without free space.
+//!
+//! The first 8 bytes of a page is the page number of
+//! the previous and next pages in the linked list,
+//! 4 bytes each. 0 stands for nil, and the rest numbers
+//! are incremented by 1 to avoid confusion with nil.
 
 use bit_set::BitSet;
 use uuid::Uuid;
@@ -35,7 +44,7 @@ impl Table {
 
     /// Allocate a new page.
     pub fn new_page<'a>(&'a mut self, fs: &'a mut PageCache) -> Result<TablePageMut> {
-        let page_id = self.schema.new_page()?;
+        let page_id = self.schema.new_page();
         log::debug!("Allocating new page {page_id}");
 
         if let Some(next_page_id) = self.schema.get_free() {
@@ -557,6 +566,14 @@ impl<'a> IntoIterator for &'a TablePageMut<'a> {
 }
 
 /// An iterator over records in a page.
+///
+/// # Iterated Items
+///
+/// Each item is a tuple of:
+///
+/// - The record.
+/// - The slot number of the record.
+/// - The offset of the record.
 pub struct PageIterator<'a, T: LinkedPage<'a>> {
     page: &'a T,
     slot: usize,

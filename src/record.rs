@@ -3,21 +3,66 @@
 use bit_set::BitSet;
 
 use crate::error::{Error, Result};
-use crate::schema::{ColumnSelector, Selector, Selectors, SetPair, TableSchema, Type, Value};
+use crate::schema::{Column, ColumnSelector, Selector, Selectors, SetPair, Type, Value};
 
-#[derive(Clone, Debug, PartialEq)]
+/// Record schema.
+///
+/// Could be either a table schema or an index schema.
+pub trait RecordSchema {
+    /// Get columns in this record.
+    fn get_columns(&self) -> &[Column];
+
+    /// Get the size of the null bitmap.
+    fn get_null_bitmap_size(&self) -> usize {
+        self.get_columns().len().div_ceil(8)
+    }
+
+    /// Get the index of a column in this record.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the column is not found.
+    ///
+    /// Please check the schema before calling this method.
+    fn get_column_index(&self, name: &str) -> usize {
+        self.get_columns()
+            .iter()
+            .position(|col| col.name == name)
+            .unwrap()
+    }
+
+    /// Get the number of fields used for comparison.
+    fn get_cmp_keys(&self) -> usize {
+        self.get_columns().len()
+    }
+}
+
+/// A record.
+///
+/// # Comparison
+///
+/// A record is compared by its key fields.
+/// By default, it uses all fields as keys.
+///
+/// When deserializing from a buffer using an index schema,
+/// the schema may optionally specify a subset of fields to be used as keys.
+///
+/// Due to some laziness, it's only supported to use the first fields as keys.
+#[derive(Clone, Debug)]
 pub struct Record {
     pub fields: Vec<Value>,
+    cmp_keys: usize,
 }
 
 impl Record {
     /// Create a new record.
     pub fn new(fields: Vec<Value>) -> Self {
-        Self { fields }
+        let cmp_keys = fields.len();
+        Self { fields, cmp_keys }
     }
 
     /// Check the record against a schema.
-    pub fn check(&self, schema: &TableSchema) -> Result<()> {
+    pub fn check<S: RecordSchema>(&self, schema: &S) -> Result<()> {
         let provided = self.fields.len();
         let expected = schema.get_columns().len();
         if provided != expected {
@@ -38,7 +83,7 @@ impl Record {
     }
 
     /// Deserialize a record from a buffer.
-    pub fn from(buf: &[u8], mut offset: usize, schema: &TableSchema) -> Self {
+    pub fn from<S: RecordSchema>(buf: &[u8], mut offset: usize, schema: &S) -> Self {
         let nulls = BitSet::from_bytes(&buf[offset..offset + schema.get_null_bitmap_size()]);
         offset += schema.get_null_bitmap_size();
 
@@ -64,11 +109,14 @@ impl Record {
             fields.push(value);
             offset += column.typ.size();
         }
-        Self { fields }
+        Self {
+            fields,
+            cmp_keys: schema.get_cmp_keys(),
+        }
     }
 
     /// Save a record into a buffer.
-    pub fn save_into(&self, buf: &mut [u8], mut offset: usize, schema: &TableSchema) {
+    pub fn save_into<S: RecordSchema>(&self, buf: &mut [u8], mut offset: usize, schema: &S) {
         let offset_orig = offset;
         offset += schema.get_null_bitmap_size();
 
@@ -105,7 +153,7 @@ impl Record {
     }
 
     /// Select some fields in the record.
-    pub fn select(&self, selectors: &Selectors, schema: &TableSchema) -> Record {
+    pub fn select<S: RecordSchema>(&self, selectors: &Selectors, schema: &S) -> Self {
         match selectors {
             Selectors::All => self.clone(),
             Selectors::Some(selectors) => {
@@ -117,7 +165,7 @@ impl Record {
                         }
                     }
                 }
-                Record { fields }
+                Record::new(fields)
             }
         }
     }
@@ -127,7 +175,7 @@ impl Record {
     /// # Returns
     ///
     /// Return true if the record is updated.
-    pub fn update(&mut self, set_pairs: &[SetPair], schema: &TableSchema) -> bool {
+    pub fn update<S: RecordSchema>(&mut self, set_pairs: &[SetPair], schema: &S) -> bool {
         let mut updated = false;
         for SetPair(column, value) in set_pairs {
             let index = schema.get_column_index(column);
@@ -138,6 +186,18 @@ impl Record {
             }
         }
         updated
+    }
+}
+
+impl PartialEq for Record {
+    fn eq(&self, other: &Self) -> bool {
+        self.fields[..self.cmp_keys] == other.fields[..other.cmp_keys]
+    }
+}
+
+impl PartialOrd for Record {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.fields[..self.cmp_keys].partial_cmp(&other.fields[..other.cmp_keys])
     }
 }
 
@@ -193,6 +253,7 @@ mod tests {
                 Value::Varchar("Alice".to_string()),
                 Value::Float(100.0),
             ],
+            cmp_keys: 3,
         };
         record.save_into(&mut buf, 0, &schema);
 
@@ -216,6 +277,7 @@ mod tests {
                 Value::Varchar("Bob".to_string()),
                 Value::Null,
             ],
+            cmp_keys: 3,
         };
         record.save_into(&mut buf, 0, &schema);
 
@@ -318,6 +380,7 @@ mod tests {
                 Value::Null,
                 Value::Null,
             ],
+            cmp_keys: 9,
         };
 
         record.save_into(&mut buf, 0, &schema);

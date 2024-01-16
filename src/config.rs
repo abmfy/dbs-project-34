@@ -6,6 +6,7 @@ use clap::Parser;
 
 pub const PAGE_SIZE: usize = 8192;
 pub const CACHE_SIZE: usize = 16384;
+
 /// Size of a link in a linked list.
 pub const LINK_SIZE: usize = 4;
 

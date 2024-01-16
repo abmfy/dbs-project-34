@@ -8,7 +8,7 @@ use csv::ReaderBuilder;
 
 use crate::error::{Error, Result};
 use crate::file::FS;
-use crate::record::Record;
+use crate::record::{Record, RecordSchema};
 use crate::schema::{Schema, Selectors, SetPair, TableSchema, Value, WhereClause};
 use crate::table::Table;
 

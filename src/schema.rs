@@ -10,11 +10,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::{LINK_SIZE, PAGE_SIZE};
 use crate::error::{Error, Result};
-use crate::{
-    config::{LINK_SIZE, PAGE_SIZE},
-    record::Record,
-};
+use crate::record::Record;
+use crate::record::RecordSchema;
 
 /// A type of a column.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -71,6 +70,7 @@ impl PartialEq for Value {
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match (self, other) {
+            (Value::Null, Value::Null) => Some(Ordering::Equal),
             (Value::Int(a), Value::Int(b)) => a.partial_cmp(b),
             (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
             (Value::Varchar(a), Value::Varchar(b)) => a
@@ -256,7 +256,7 @@ impl SetPair {
         if !schema.has_column(&column) {
             return Err(Error::ColumnNotFound(column.to_owned()));
         }
-        let column = schema.get_column(&column);
+        let column = schema.get_column(column);
         let typ = &column.typ;
         if !value.check_type(typ) {
             return Err(Error::TypeMismatch(value.clone(), typ.clone()));
@@ -430,11 +430,6 @@ impl TableSchema {
         Ok(())
     }
 
-    /// Get the size of the null bitmap.
-    pub fn get_null_bitmap_size(&self) -> usize {
-        self.null_bitmap_size
-    }
-
     /// Get the length of a record.
     pub fn get_record_size(&self) -> usize {
         self.record_size
@@ -445,11 +440,6 @@ impl TableSchema {
         self.column_map.contains_key(name)
     }
 
-    /// Return a reference to column information.
-    pub fn get_columns(&self) -> &[Column] {
-        &self.columns
-    }
-
     /// Return a reference to table constraints.
     pub fn get_constraints(&self) -> &[Constraint] {
         &self.constraints
@@ -458,11 +448,6 @@ impl TableSchema {
     /// Get a column by its name.
     pub fn get_column(&self, name: &str) -> &Column {
         &self.columns[self.column_map[name]]
-    }
-
-    /// Get the index of a column by its name.
-    pub fn get_column_index(&self, name: &str) -> usize {
-        self.column_map[name]
     }
 
     /// Get the maximum count of records available in a page.
@@ -506,10 +491,27 @@ impl TableSchema {
     }
 
     /// Allocate a new page for the table.
-    pub fn new_page(&mut self) -> Result<usize> {
+    pub fn new_page(&mut self) -> usize {
         let page = self.schema.pages;
         self.schema.pages += 1;
-        Ok(page)
+        page
+    }
+}
+
+impl RecordSchema for TableSchema {
+    /// Return a reference to column information.
+    fn get_columns(&self) -> &[Column] {
+        &self.columns
+    }
+
+    /// Get the size of the null bitmap.
+    fn get_null_bitmap_size(&self) -> usize {
+        self.null_bitmap_size
+    }
+
+    /// Get the index of a column by its name.
+    fn get_column_index(&self, name: &str) -> usize {
+        self.column_map[name]
     }
 }
 
