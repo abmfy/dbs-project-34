@@ -979,6 +979,7 @@ fn parse_alter_statement(
     let pair = statement.into_iter().next().unwrap();
     match pair.as_rule() {
         Rule::alter_add_index => parse_add_index_statement(system, pair.into_inner()),
+        Rule::alter_drop_index => parse_drop_index_statement(system, pair.into_inner()),
         _ => unimplemented!(),
     }
 }
@@ -1010,6 +1011,33 @@ fn parse_add_index_statement(
     let columns = columns.unwrap();
 
     system.add_index(table, index_name, &columns)?;
+
+    Ok((fresh_table(), QueryStat::Update(0)))
+}
+
+fn parse_drop_index_statement(
+    system: &mut System,
+    pairs: Pairs<Rule>,
+) -> Result<(Table, QueryStat)> {
+    let mut table = None;
+    let mut index_name = None;
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::identifier => {
+                table = Some(pair.as_str());
+            }
+            Rule::index_identifier => {
+                index_name = Some(pair.as_str());
+            }
+            _ => continue,
+        }
+    }
+
+    let table = table.unwrap();
+    let index_name = index_name.unwrap();
+
+    system.drop_index(table, index_name)?;
 
     Ok((fresh_table(), QueryStat::Update(0)))
 }

@@ -461,9 +461,21 @@ impl TableSchema {
         &self.schema.indexes
     }
 
-    /// Add a index to the table.
+    /// Check whether a given index is in a table.
+    pub fn has_index(&self, name: &str) -> bool {
+        self.schema.indexes.iter().any(|i| i.name == name)
+    }
+
+    /// Add an index to the table.
     pub fn add_index(&mut self, index: IndexSchema) {
         self.schema.indexes.push(index);
+    }
+
+    /// Remove an index from the table.
+    pub fn remove_index(&mut self, name: &str) {
+        log::info!("Dropping index {name}");
+        log::info!("Current indexes: {:?}", self.schema.indexes);
+        self.schema.indexes.retain(|i| i.name != name);
     }
 
     /// Get a column by its name.

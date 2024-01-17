@@ -510,6 +510,36 @@ impl System {
 
         Ok(())
     }
+
+    /// Execute drop index statement.
+    pub fn drop_index(&mut self, table_name: &str, index_name: &str) -> Result<()> {
+        log::info!("Executing drop index statement");
+
+        self.open_table(table_name)?;
+        let table = self.get_table(table_name)?;
+
+        let schema = table.get_schema();
+        if !schema.has_index(index_name) {
+            return Err(Error::IndexNotFound(index_name.to_owned()));
+        }
+
+        let db = self.db.as_ref().ok_or(Error::NoDatabaseSelected)?;
+        let table = db.join(table_name);
+
+        let filename = format!("{}.index.bin", index_name);
+        let data = table.join(filename);
+        fs::remove_file(data)?;
+
+        let filename = format!("{}.index.json", index_name);
+        let meta = table.join(filename);
+        fs::remove_file(meta)?;
+
+        self.open_table(table_name)?;
+        let table = self.get_table_mut(table_name)?;
+        table.remove_index(index_name);
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

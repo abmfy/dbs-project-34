@@ -333,6 +333,11 @@ impl Table {
     pub fn add_index(&mut self, schema: IndexSchema) {
         self.schema.add_index(schema);
     }
+
+    /// Remove an index schema from the table.
+    pub fn remove_index(&mut self, name: &str) {
+        self.schema.remove_index(name);
+    }
 }
 
 /// Common behaviors between TablePage and TablePageMut.

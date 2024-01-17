@@ -81,7 +81,7 @@ fn to_nullable_int(buf: &mut [u8], int: Option<usize>) {
 }
 
 /// Index schema.
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct IndexSchema {
     /// Count of pages in this index.
     pub pages: usize,
