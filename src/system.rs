@@ -297,13 +297,18 @@ impl System {
         // Create indexes for constraints
         for constraint in schema.constraints {
             match constraint {
-                Constraint::PrimaryKey {name, columns} => {
+                Constraint::PrimaryKey { name, columns } => {
                     log::info!("Creating index for primary key {name:?}");
                     let name = name.as_deref();
                     let columns: Vec<_> = columns.iter().map(|c| c.as_str()).collect();
                     self.add_index(false, Some("pk"), table_name, name, columns.as_slice())?;
                 }
-                Constraint::ForeignKey { name, columns, ref_table: _, ref_columns: _ } => {
+                Constraint::ForeignKey {
+                    name,
+                    columns,
+                    ref_table: _,
+                    ref_columns: _,
+                } => {
                     log::info!("Creating index for foreign key {name:?}");
                     let name = name.as_deref();
                     let columns: Vec<_> = columns.iter().map(|c| c.as_str()).collect();
@@ -476,18 +481,52 @@ impl System {
     pub fn insert(&mut self, table: &str, records: Vec<Record>) -> Result<()> {
         log::info!("Executing insert statement");
 
+        let table_name = table;
+
         self.open_table(table)?;
-        let table = self.get_table_mut(table)?;
+        let table = self.get_table(table)?;
 
         let schema = table.get_schema();
         for record in &records {
             record.check(schema)?;
         }
 
+        // Open all indexes of this table.
+        let indexes: Vec<_> = table
+            .get_schema()
+            .get_indexes()
+            .iter()
+            .map(|index| index.name.clone())
+            .collect();
+        for index in &indexes {
+            self.open_index(table_name, index)?;
+        }
+
         let mut fs = FS.lock()?;
 
         for record in records {
-            table.insert(&mut fs, record)?;
+            let table = self.get_table_mut(table_name)?;
+            let (page_id, slot) = table.insert(&mut fs, record.clone())?;
+
+            let name = table_name;
+
+            // Insert into indexes
+            for index_name in &indexes {
+                let index = self.get_index(name, index_name)?;
+                let table = self.get_table(name)?;
+
+                let columns: Vec<_> = index
+                    .get_columns()
+                    .iter()
+                    .cloned()
+                    .map(|c| Selector::Column(ColumnSelector(None, c.name)))
+                    .collect();
+                let selector = Selectors::Some(columns);
+                let key = record.select(&selector, table.get_schema());
+
+                let index = self.get_index_mut(name, index_name)?;
+                index.insert(&mut fs, key, page_id, slot)?;
+            }
         }
 
         Ok(())
@@ -725,6 +764,12 @@ impl System {
     /// Execute drop index statement.
     pub fn drop_index(&mut self, table_name: &str, index_name: &str) -> Result<()> {
         log::info!("Executing drop index statement");
+
+        // Writing back dirty pages in the cache.
+        if let Some(index) = self.indexes.remove(&(table_name.to_owned(), index_name.to_owned())) {
+            let mut fs = FS.lock()?;
+            fs.close(index.get_fd())?;
+        }
 
         self.open_table(table_name)?;
         let table = self.get_table(table_name)?;

@@ -6,4 +6,5 @@ run:
   flags:
     - data
     - query
+    - index
 

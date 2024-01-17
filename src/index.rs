@@ -121,7 +121,7 @@ impl IndexSchema {
 
 impl Display for IndexSchema {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "INDEX {}({})", self.name, self.columns.join(", "))
+        write!(f, "INDEX {}({});", self.name, self.columns.join(", "))
     }
 }
 

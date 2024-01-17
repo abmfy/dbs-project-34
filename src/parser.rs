@@ -495,7 +495,12 @@ fn parse_desc_statement(system: &mut System, statement: Pairs<Rule>) -> Result<(
     });
 
     let constraints = schema.get_constraints().into();
-    let indexes: Vec<_> = schema.get_indexes().into_iter().filter(|&index| index.explicit).cloned().collect();
+    let indexes: Vec<_> = schema
+        .get_indexes()
+        .iter()
+        .filter(|&index| index.explicit)
+        .cloned()
+        .collect();
 
     Ok((ret, QueryStat::Desc(constraints, indexes)))
 }
