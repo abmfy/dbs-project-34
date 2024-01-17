@@ -1,6 +1,6 @@
 //! Database system management.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
@@ -306,13 +306,23 @@ impl System {
                 Constraint::ForeignKey {
                     name,
                     columns,
-                    ref_table: _,
-                    ref_columns: _,
+                    ref_table,
+                    ref_columns,
                 } => {
                     log::info!("Creating index for foreign key {name:?}");
                     let name = name.as_deref();
                     let columns: Vec<_> = columns.iter().map(|c| c.as_str()).collect();
-                    self.add_index(false, Some("fk"), table_name, name, columns.as_slice())?;
+                    self.add_index(false, Some("fk_to"), table_name, name, columns.as_slice())?;
+
+                    log::info!("Creating index for foreign key referenced table {ref_table:?}");
+                    let ref_columns: Vec<_> = ref_columns.iter().map(|c| c.as_str()).collect();
+                    self.add_index(
+                        false,
+                        Some("fk_from"),
+                        &ref_table,
+                        None,
+                        ref_columns.as_slice(),
+                    )?;
                 }
             }
         }
@@ -661,7 +671,7 @@ impl System {
         let mut left: HashMap<String, Vec<i32>> = HashMap::new();
         let mut right: HashMap<String, Vec<i32>> = HashMap::new();
 
-        let mut known_columns = vec![];
+        let mut known_columns: HashSet<String> = Default::default();
         for where_clause in where_clauses {
             match where_clause {
                 WhereClause::OperatorExpression(column, operator, expression) => {
@@ -669,35 +679,34 @@ impl System {
                         Expression::Column(_) => return Ok(None),
                         Expression::Value(v) => {
                             let column_name = column.1.clone();
-                            known_columns.push(column_name.clone());
-                            match v {
-                                // Only index on int supported yet
-                                Value::Int(value) => {
-                                    match operator {
-                                        Operator::Eq => {
-                                            left.entry(column_name.clone())
-                                                .or_default()
-                                                .push(*value);
-                                            right.entry(column_name).or_default().push(*value);
-                                        }
-                                        Operator::Ne => {
-                                            // Ne is ignored
-                                        }
-                                        Operator::Lt => {
-                                            right.entry(column_name).or_default().push(*value - 1);
-                                        }
-                                        Operator::Le => {
-                                            right.entry(column_name).or_default().push(*value);
-                                        }
-                                        Operator::Gt => {
-                                            left.entry(column_name).or_default().push(*value + 1);
-                                        }
-                                        Operator::Ge => {
-                                            left.entry(column_name).or_default().push(*value);
-                                        }
+                            // Only index on int supported yet
+                            if let Value::Int(value) = v {
+                                match operator {
+                                    Operator::Eq => {
+                                        known_columns.insert(column_name.clone());
+                                        left.entry(column_name.clone()).or_default().push(*value);
+                                        right.entry(column_name).or_default().push(*value);
+                                    }
+                                    Operator::Ne => {
+                                        // Ne is ignored
+                                    }
+                                    Operator::Lt => {
+                                        known_columns.insert(column_name.clone());
+                                        right.entry(column_name).or_default().push(*value - 1);
+                                    }
+                                    Operator::Le => {
+                                        known_columns.insert(column_name.clone());
+                                        right.entry(column_name).or_default().push(*value);
+                                    }
+                                    Operator::Gt => {
+                                        known_columns.insert(column_name.clone());
+                                        left.entry(column_name).or_default().push(*value + 1);
+                                    }
+                                    Operator::Ge => {
+                                        known_columns.insert(column_name.clone());
+                                        left.entry(column_name).or_default().push(*value);
                                     }
                                 }
-                                _ => (),
                             }
                         }
                     }
@@ -714,8 +723,8 @@ impl System {
         // The conditions are only on one column, and the comparisons are all values
         for index in table.get_schema().get_indexes() {
             if index.columns.len() == 1 && known_columns.contains(&index.columns[0]) {
-                let left = left.get(&index.columns[0]).unwrap();
-                let right = right.get(&index.columns[0]).unwrap();
+                let left = left.remove(&index.columns[0]).unwrap_or_default();
+                let right = right.remove(&index.columns[0]).unwrap_or_default();
 
                 // Use this index
                 let index = self.get_index(table_name, &index.name)?;
