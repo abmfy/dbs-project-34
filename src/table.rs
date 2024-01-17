@@ -259,9 +259,9 @@ impl Table {
     }
 
     /// Update records in the table.
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// Returns the updated record and their page and slot ids.
     pub fn update<'a>(
         &'a mut self,

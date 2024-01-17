@@ -284,10 +284,10 @@ impl Index {
         let mut l: i32 = 0;
         let mut r: i32 = size as i32 - 1;
         while l <= r {
-            log::info!("Current range is [{l}, {r}]");
+            log::debug!("Current range is [{l}, {r}]");
             let mid = (l + r) / 2;
             let record = page.get_record(mid as usize);
-            log::info!("Comparing with {mid}: {record:?}");
+            log::debug!("Comparing with {mid}: {record:?}");
             if &record < key {
                 l = mid + 1;
             } else {
@@ -842,7 +842,6 @@ impl Index {
 
         log::info!("Left size is {left_size}, right size is {right_size}");
 
-
         // Can't merge if total size is greater than max size
         if total_size > max_records {
             return Ok(false);
@@ -1245,8 +1244,12 @@ impl<'a> IndexPageMut<'a> {
         let begin = HEADER_SIZE + slot * self.record_size;
         let end = HEADER_SIZE + (slot + records.len()) * self.record_size;
         let end = end.min(PAGE_SIZE - records.len() * self.record_size);
-        log::info!("Shifting range {begin}..{end}");
-        log::info!("is_leaf: {}, end: {}", self.is_leaf(), end + records.len() * self.record_size);
+        log::debug!("Shifting range {begin}..{end}");
+        log::debug!(
+            "is_leaf: {}, end: {}",
+            self.is_leaf(),
+            end + records.len() * self.record_size
+        );
         self.buf
             .copy_within(begin..end, begin + records.len() * self.record_size);
         for (i, record) in records.into_iter().enumerate() {

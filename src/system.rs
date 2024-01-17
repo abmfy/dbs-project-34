@@ -658,63 +658,65 @@ impl System {
         let table = self.get_table(table_name)?;
 
         // Left and right bounds for the condition.
-        let mut left = vec![];
-        let mut right = vec![];
+        let mut left: HashMap<String, Vec<i32>> = HashMap::new();
+        let mut right: HashMap<String, Vec<i32>> = HashMap::new();
 
-        let mut known_column = None;
+        let mut known_columns = vec![];
         for where_clause in where_clauses {
             match where_clause {
                 WhereClause::OperatorExpression(column, operator, expression) => {
                     match expression {
                         Expression::Column(_) => return Ok(None),
                         Expression::Value(v) => {
+                            let column_name = column.1.clone();
+                            known_columns.push(column_name.clone());
                             match v {
                                 // Only index on int supported yet
                                 Value::Int(value) => {
                                     match operator {
                                         Operator::Eq => {
-                                            left.push(*value);
-                                            right.push(*value);
+                                            left.entry(column_name.clone())
+                                                .or_default()
+                                                .push(*value);
+                                            right.entry(column_name).or_default().push(*value);
                                         }
                                         Operator::Ne => {
                                             // Ne is ignored
                                         }
                                         Operator::Lt => {
-                                            right.push(*value - 1);
+                                            right.entry(column_name).or_default().push(*value - 1);
                                         }
                                         Operator::Le => {
-                                            right.push(*value);
+                                            right.entry(column_name).or_default().push(*value);
                                         }
                                         Operator::Gt => {
-                                            left.push(*value + 1);
+                                            left.entry(column_name).or_default().push(*value + 1);
                                         }
                                         Operator::Ge => {
-                                            left.push(*value);
+                                            left.entry(column_name).or_default().push(*value);
                                         }
                                     }
                                 }
-                                _ => return Ok(None),
+                                _ => (),
                             }
                         }
-                    }
-                    if let Some(known_column) = known_column {
-                        if known_column != &column.1 {
-                            return Ok(None);
-                        }
-                    } else {
-                        known_column = Some(&column.1);
                     }
                 }
             }
         }
 
-        if known_column.is_none() {
+        if known_columns.is_empty() {
             return Ok(None);
         }
 
+        log::info!("Known columns in condition: {known_columns:?}");
+
         // The conditions are only on one column, and the comparisons are all values
         for index in table.get_schema().get_indexes() {
-            if index.columns.len() == 1 && &index.columns[0] == known_column.unwrap() {
+            if index.columns.len() == 1 && known_columns.contains(&index.columns[0]) {
+                let left = left.get(&index.columns[0]).unwrap();
+                let right = right.get(&index.columns[0]).unwrap();
+
                 // Use this index
                 let index = self.get_index(table_name, &index.name)?;
 
