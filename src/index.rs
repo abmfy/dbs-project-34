@@ -31,9 +31,7 @@ use std::fmt::{self, Display, Formatter};
 use std::fs::File;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::ptr::null;
 
-use log::info;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -99,8 +97,8 @@ pub struct IndexSchema {
 
 impl IndexSchema {
     pub fn new(explicit: bool, name: Option<&str>, columns: &[&str]) -> Self {
-        let mut name = if name.is_some() {
-            name.unwrap().to_owned()
+        let mut name = if let Some(name) = name {
+            name.to_owned()
         } else {
             format!("annoy.{}", columns.join("_"))
         };
@@ -269,10 +267,11 @@ impl Index {
     /// Find the first children with a key greater than or equal to the given key.
     ///
     /// Returns the last if no such children exists.
-    /// 
+    ///
     /// This function uses binary search because otherwise it will cost too much time.
     fn find<'a, T: LinkedIndexPage<'a>>(&'a self, page: &'a T, key: &Record) -> usize {
         let size = page.get_size();
+        log::info!("Size of this index record is {size}");
         let mut ret = size - 1;
 
         let mut l: i32 = 0;
@@ -307,7 +306,7 @@ impl Index {
         let mut page_buf = fs.get(self.fd, page_id)?;
         let mut page = IndexPage::from_buf(self, page_buf);
         while !page.is_leaf() {
-            let pos = self.find(&page, &key);
+            let pos = self.find(&page, key);
             page_id = page.get_record(pos).get_child();
             log::info!("Walk into {page_id}");
             page_buf = fs.get(self.fd, page_id)?;
@@ -317,10 +316,10 @@ impl Index {
         log::info!("Found leaf page {page_id}");
 
         // Find the correct position to insert
-        let mut pos = self.find(&page, &key);
+        let mut pos = self.find(&page, key);
         log::info!("Position is  {pos}");
         while &page.get_record(pos) < key {
-            pos = pos + 1;
+            pos += 1;
             for (record, slot, _) in page.iter().skip(pos) {
                 pos = slot;
                 if &record >= key {
@@ -982,7 +981,7 @@ impl<'a, T: LinkedIndexPage<'a>> PageIterator<'a, T> {
     }
 }
 
-impl<'a, 'b, T: LinkedIndexPage<'a>> Iterator for PageIterator<'a, T> {
+impl<'a, T: LinkedIndexPage<'a>> Iterator for PageIterator<'a, T> {
     type Item = (Record, usize, usize);
 
     fn next(&mut self) -> Option<Self::Item> {

@@ -7,11 +7,12 @@ use std::path::{Path, PathBuf};
 use csv::ReaderBuilder;
 
 use crate::error::{Error, Result};
-use crate::file::FS;
-use crate::index::{Index, IndexSchema};
+use crate::file::{PageCache, FS};
+use crate::index::{Index, IndexSchema, LeafIterator};
 use crate::record::{Record, RecordSchema};
 use crate::schema::{
-    ColumnSelector, Schema, Selector, Selectors, SetPair, TableSchema, Value, WhereClause,
+    ColumnSelector, Expression, Operator, Schema, Selector, Selectors, SetPair, TableSchema, Value,
+    WhereClause,
 };
 use crate::table::Table;
 
@@ -193,6 +194,11 @@ impl System {
 
     /// Open a index, hold its file descriptor and schema.
     fn open_index(&mut self, table_name: &str, name: &str) -> Result<()> {
+        if self.indexes.contains_key(&(table_name.to_owned(), name.to_owned())) {
+            return Ok(());
+        }
+
+        log::info!("Opening index {table_name}.{name}");
         let db = self.db.as_ref().ok_or(Error::NoDatabaseSelected)?;
         let table = db.join(table_name);
 
@@ -299,7 +305,7 @@ impl System {
             .indexes
             .keys()
             .filter(|(table_name, _)| table_name == name)
-            .map(|k| k.clone())
+            .cloned()
             .collect();
         for index in keys {
             let index = self.indexes.remove(&index).unwrap();
@@ -355,6 +361,7 @@ impl System {
 
         assert_eq!(tables.len(), 1, "Joining is not supported yet");
 
+        let table_name = tables[0];
         self.open_table(tables[0])?;
         let table = self.get_table(tables[0])?;
 
@@ -363,10 +370,49 @@ impl System {
             where_clause.check(table.get_schema())?
         }
 
-        let mut fs = FS.lock()?;
-        let ret = table.select(&mut fs, selectors, where_clauses)?;
+        // Open all indexes of this table.
+        let indexes: Vec<_> = table.get_schema().get_indexes().iter().map(|index| index.name.clone()).collect();
+        for index in indexes {
+            self.open_index(table_name, &index)?;
+        }
 
-        Ok(ret)
+        let table = self.get_table(table_name)?;
+
+        let mut fs = FS.lock()?;
+
+        // Check index availability
+        let index = self.match_index(&mut fs, tables[0], where_clauses)?;
+        if let Some((index_name, left_iter, right_key)) = index {
+            log::info!("Using index {index_name}");
+
+            // Use index
+            let mut iter = left_iter;
+
+            let mut ret = vec![];
+
+            loop {
+                let index = self.get_index(table_name, &index_name)?;
+                let (record, page, slot) = index.get_record(&mut fs, iter)?;
+                // Iteration ended
+                if record > right_key {
+                    return Ok(ret);
+                }
+                let table = self.get_table(table_name)?;
+                if let Some(record) =
+                    table.select_page_slot(&mut fs, page, slot, selectors, where_clauses)?
+                {
+                    ret.push(record);
+                }
+                if let Some(new_iter) = index.inc_iter(&mut fs, iter)? {
+                    iter = new_iter;
+                } else {
+                    return Ok(ret);
+                }
+            }
+        } else {
+            let ret = table.select(&mut fs, selectors, where_clauses)?;
+            Ok(ret)
+        }
     }
 
     /// Execute insert statement.
@@ -432,6 +478,105 @@ impl System {
         Ok(ret)
     }
 
+    /// Match the condition against the index, and return the index leaf iterator
+    /// if the query can be speeded up by the index.
+    fn match_index(
+        &self,
+        fs: &mut PageCache,
+        table_name: &str,
+        where_clauses: &[WhereClause],
+    ) -> Result<Option<(String, LeafIterator, Record)>> {
+        log::info!("Matching index for table {}", table_name);
+
+        let table = self.get_table(table_name)?;
+
+        // Left and right bounds for the condition.
+        let mut left = vec![];
+        let mut right = vec![];
+
+        let mut known_column = None;
+        for where_clause in where_clauses {
+            match where_clause {
+                WhereClause::OperatorExpression(column, operator, expression) => {
+                    match expression {
+                        Expression::Column(_) => return Ok(None),
+                        Expression::Value(v) => {
+                            match v {
+                                // Only index on int supported yet
+                                Value::Int(value) => {
+                                    match operator {
+                                        Operator::Eq => {
+                                            left.push(*value);
+                                            right.push(*value);
+                                        }
+                                        Operator::Ne => {
+                                            // Ne is ignored
+                                        }
+                                        Operator::Lt => {
+                                            right.push(*value - 1);
+                                        }
+                                        Operator::Le => {
+                                            right.push(*value);
+                                        }
+                                        Operator::Gt => {
+                                            left.push(*value + 1);
+                                        }
+                                        Operator::Ge => {
+                                            left.push(*value);
+                                        }
+                                    }
+                                }
+                                _ => return Ok(None),
+                            }
+                        }
+                    }
+                    if let Some(known_column) = known_column {
+                        if known_column != &column.1 {
+                            return Ok(None);
+                        }
+                    } else {
+                        known_column = Some(&column.1);
+                    }
+                }
+            }
+        }
+
+        // The conditions are only on one column, and the comparisons are all values
+        for index in table.get_schema().get_indexes() {
+            if index.columns.len() == 1 && &index.columns[0] == known_column.unwrap() {
+                // Use this index
+                let index = self.get_index(table_name, &index.name)?;
+
+                // Filter conditions
+                let left = left.iter().max().unwrap_or(&i32::MIN);
+                let right = right.iter().min().unwrap_or(&i32::MAX);
+
+                let left_key = Record::new(vec![Value::Int(*left)]);
+                let right_key = Record::new(vec![Value::Int(*right)]);
+
+                let left_iter = index.index(fs, &left_key)?;
+                let right_iter = index.index(fs, &right_key)?;
+
+                if left_iter.is_none() {
+                    return Ok(None);
+                }
+                if right_iter.is_none() {
+                    return Ok(None);
+                }
+
+                let left_iter = left_iter.unwrap();
+
+                return Ok(Some((
+                    index.get_schema().name.clone(),
+                    left_iter,
+                    right_key,
+                )));
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Initialize index, adding all existing records into the index.
     fn init_index(&mut self, table_name: &str, index_name: &str, columns: &[&str]) -> Result<()> {
         log::info!("Initializing index {table_name}.{index_name}");
@@ -450,7 +595,7 @@ impl System {
             log::info!("Adding index for page {i}");
             let table = self.get_table(table_name)?;
             let keys = table.select_page(&mut fs, i, &selectors)?;
-            let index = self.get_index_mut(table_name, &index_name)?;
+            let index = self.get_index_mut(table_name, index_name)?;
             for (key, slot) in keys {
                 index.insert(&mut fs, key, i, slot)?;
             }

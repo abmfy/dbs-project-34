@@ -13,9 +13,9 @@ use bit_set::BitSet;
 use uuid::Uuid;
 
 use crate::config::LINK_SIZE;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::file::PageCache;
-use crate::index::{Index, IndexSchema};
+use crate::index::IndexSchema;
 use crate::record::Record;
 use crate::schema::{Selectors, SetPair, TableSchema, WhereClause};
 
@@ -181,6 +181,32 @@ impl Table {
         }
 
         Ok(records)
+    }
+
+    /// Read a record from the table, given page and slot.
+    pub fn select_page_slot(
+        &self,
+        fs: &mut PageCache,
+        page_id: usize,
+        slot: usize,
+        selector: &Selectors,
+        where_clauses: &[WhereClause],
+    ) -> Result<Option<Record>> {
+        log::info!("Fetching indexed record {page_id}, {slot}");
+
+        let page_buf = fs.get(self.fd, page_id)?;
+        let page = TablePage::new(self, page_buf);
+
+        let record = page.get_record(slot);
+
+        if where_clauses
+            .iter()
+            .all(|clause| clause.matches(&record, &self.schema))
+        {
+            Ok(Some(record.select(selector, &self.schema)))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Read a block of records out of the table.
@@ -367,6 +393,12 @@ pub trait LinkedPage<'a> {
         Self: Sized,
     {
         PageIterator::new(self)
+    }
+
+    /// Get a record from the page using a slot id.
+    fn get_record(&self, slot: usize) -> Record {
+        let offset = 2 * LINK_SIZE + self.get_free_bitmap_size() + slot * self.get_record_size();
+        Record::from(self.get_buf(), offset, &self.get_table().schema)
     }
 
     /// Get the previous page number.

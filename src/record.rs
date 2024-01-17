@@ -87,7 +87,7 @@ impl Record {
     ///
     /// Panics if index out of bound.
     /// Be careful only to call this method on leaf index record.
-    pub fn to_internal(self) -> Self {
+    pub fn into_internal(self) -> Self {
         let mut fields = self.fields;
         fields.pop();
         Self {
