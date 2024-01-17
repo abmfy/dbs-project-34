@@ -11,8 +11,8 @@ use crate::file::{PageCache, FS};
 use crate::index::{Index, IndexSchema, LeafIterator};
 use crate::record::{Record, RecordSchema};
 use crate::schema::{
-    ColumnSelector, Expression, Operator, Schema, Selector, Selectors, SetPair, TableSchema, Value,
-    WhereClause,
+    ColumnSelector, Constraint, Expression, Operator, Schema, Selector, Selectors, SetPair,
+    TableSchema, Value, WhereClause,
 };
 use crate::table::Table;
 
@@ -194,7 +194,10 @@ impl System {
 
     /// Open a index, hold its file descriptor and schema.
     fn open_index(&mut self, table_name: &str, name: &str) -> Result<()> {
-        if self.indexes.contains_key(&(table_name.to_owned(), name.to_owned())) {
+        if self
+            .indexes
+            .contains_key(&(table_name.to_owned(), name.to_owned()))
+        {
             return Ok(());
         }
 
@@ -289,6 +292,26 @@ impl System {
 
         self.open_table(name)?;
 
+        let table_name = name;
+
+        // Create indexes for constraints
+        for constraint in schema.constraints {
+            match constraint {
+                Constraint::PrimaryKey {name, columns} => {
+                    log::info!("Creating index for primary key {name:?}");
+                    let name = name.as_deref();
+                    let columns: Vec<_> = columns.iter().map(|c| c.as_str()).collect();
+                    self.add_index(false, Some("pk"), table_name, name, columns.as_slice())?;
+                }
+                Constraint::ForeignKey { name, columns, ref_table: _, ref_columns: _ } => {
+                    log::info!("Creating index for foreign key {name:?}");
+                    let name = name.as_deref();
+                    let columns: Vec<_> = columns.iter().map(|c| c.as_str()).collect();
+                    self.add_index(false, Some("fk"), table_name, name, columns.as_slice())?;
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -331,7 +354,17 @@ impl System {
         log::info!("Loading data into table {}", name);
 
         self.open_table(name)?;
-        let table = self.get_table_mut(name)?;
+        let table = self.get_table(name)?;
+        // Open all indexes of this table.
+        let indexes: Vec<_> = table
+            .get_schema()
+            .get_indexes()
+            .iter()
+            .map(|index| index.name.clone())
+            .collect();
+        for index in &indexes {
+            self.open_index(name, index)?;
+        }
 
         let mut count = 0;
         let mut reader = ReaderBuilder::new().has_headers(false).from_path(file)?;
@@ -339,12 +372,31 @@ impl System {
             let record = result?;
             log::debug!("Loading record {record:?}");
             let mut fields = vec![];
+            let table = self.get_table_mut(name)?;
             for (field, column) in record.iter().zip(table.get_schema().get_columns()) {
                 fields.push(Value::from(field, &column.typ)?);
             }
             let mut fs = FS.lock()?;
-            table.insert(&mut fs, Record::new(fields))?;
+            let (page_id, slot) = table.insert(&mut fs, Record::new(fields.clone()))?;
             count += 1;
+
+            // Insert into indexes
+            for index_name in &indexes {
+                let index = self.get_index(name, index_name)?;
+                let table = self.get_table(name)?;
+
+                let columns: Vec<_> = index
+                    .get_columns()
+                    .iter()
+                    .cloned()
+                    .map(|c| Selector::Column(ColumnSelector(None, c.name)))
+                    .collect();
+                let selector = Selectors::Some(columns);
+                let key = Record::new(fields.clone()).select(&selector, table.get_schema());
+
+                let index = self.get_index_mut(name, index_name)?;
+                index.insert(&mut fs, key, page_id, slot)?;
+            }
         }
 
         Ok(count)
@@ -371,7 +423,12 @@ impl System {
         }
 
         // Open all indexes of this table.
-        let indexes: Vec<_> = table.get_schema().get_indexes().iter().map(|index| index.name.clone()).collect();
+        let indexes: Vec<_> = table
+            .get_schema()
+            .get_indexes()
+            .iter()
+            .map(|index| index.name.clone())
+            .collect();
         for index in indexes {
             self.open_index(table_name, &index)?;
         }
@@ -541,6 +598,10 @@ impl System {
             }
         }
 
+        if known_column.is_none() {
+            return Ok(None);
+        }
+
         // The conditions are only on one column, and the comparisons are all values
         for index in table.get_schema().get_indexes() {
             if index.columns.len() == 1 && &index.columns[0] == known_column.unwrap() {
@@ -607,6 +668,8 @@ impl System {
     /// Execute add index statement.
     pub fn add_index(
         &mut self,
+        explicit: bool,
+        prefix: Option<&str>,
         table_name: &str,
         index_name: Option<&str>,
         columns: &[&str],
@@ -623,15 +686,18 @@ impl System {
             }
         }
 
-        for index in schema.get_indexes() {
-            if index.columns == columns {
-                return Err(Error::DuplicateIndex(
-                    columns.iter().map(|&s| s.to_owned()).collect(),
-                ));
+        // Duplicate index is only checked on explicit indexes.
+        if explicit {
+            for index in schema.get_indexes() {
+                if index.columns == columns {
+                    return Err(Error::DuplicateIndex(
+                        columns.iter().map(|&s| s.to_owned()).collect(),
+                    ));
+                }
             }
         }
 
-        let schema = IndexSchema::new(true, index_name, columns);
+        let schema = IndexSchema::new(explicit, prefix, index_name, columns);
         let index_name = schema.name.clone();
 
         let db = self.db.as_ref().ok_or(Error::NoDatabaseSelected)?;

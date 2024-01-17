@@ -229,7 +229,15 @@ impl Table {
     }
 
     /// Insert a record into the table.
-    pub fn insert<'a>(&'a mut self, fs: &'a mut PageCache, record: Record) -> Result<()> {
+    ///
+    /// # Returns
+    ///
+    /// Returns the page and slot ids of the inserted record, for indexing.
+    pub fn insert<'a>(
+        &'a mut self,
+        fs: &'a mut PageCache,
+        record: Record,
+    ) -> Result<(usize, usize)> {
         log::debug!("Inserting {record:?}");
 
         if self.schema.get_free().is_none() {
@@ -241,12 +249,13 @@ impl Table {
         let page_buf = fs.get_mut(self.fd, page_id)?;
         let mut page = TablePageMut::new(self, page_buf);
 
-        if !page.insert(record, &self.schema) {
+        let (free, slot) = page.insert(record, &self.schema);
+        if !free {
             log::debug!("A page is filled");
             self.full_page(fs, page_id)?;
         }
 
-        Ok(())
+        Ok((page_id, slot))
     }
 
     /// Update records in the table.
@@ -573,8 +582,10 @@ impl<'a> TablePageMut<'a> {
     ///
     /// # Returns
     ///
-    /// Return `false` if the page becomes full after this insertion.
-    pub fn insert(&mut self, record: Record, schema: &TableSchema) -> bool {
+    /// Returns a tuple:
+    /// 1. `bool`: `false` if the page becomes full after this insertion.
+    /// 2. `usize`: the slot id of the inserted record.
+    pub fn insert(&mut self, record: Record, schema: &TableSchema) -> (bool, usize) {
         let free = self.free.expect("Insert called on a full page");
         self.occupy(free);
 
@@ -582,7 +593,7 @@ impl<'a> TablePageMut<'a> {
             2 * LINK_SIZE + self.free_bitmap_size + free * self.table.schema.get_record_size();
         record.save_into(self.buf, offset, schema);
 
-        self.free.is_some()
+        (self.free.is_some(), free)
     }
 
     /// Update a record in the page.

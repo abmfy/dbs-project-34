@@ -96,12 +96,15 @@ pub struct IndexSchema {
 }
 
 impl IndexSchema {
-    pub fn new(explicit: bool, name: Option<&str>, columns: &[&str]) -> Self {
+    pub fn new(explicit: bool, prefix: Option<&str>, name: Option<&str>, columns: &[&str]) -> Self {
         let mut name = if let Some(name) = name {
             name.to_owned()
         } else {
             format!("annoy.{}", columns.join("_"))
         };
+        if let Some(prefix) = prefix {
+            name = format!("{}.{}", prefix, name);
+        }
         if !explicit {
             name.push_str(".implicit");
         }
@@ -188,7 +191,7 @@ impl Index {
 
     /// Save changes into the schema file.
     fn save(&self) -> Result<()> {
-        log::info!("Saving schema to {}", self.path.display());
+        log::debug!("Saving schema to {}", self.path.display());
         let file = File::create(&self.path)?;
         serde_json::to_writer(file, &self.schema)?;
         Ok(())
@@ -240,12 +243,12 @@ impl Index {
         parent_id: usize,
         child_id: usize,
     ) -> Result<Option<usize>> {
-        log::info!("Looking up pos of {child_id} in {parent_id}");
+        log::debug!("Looking up pos of {child_id} in {parent_id}");
 
         let buf = fs.get(self.fd, child_id)?;
         let page = IndexPage::from_buf(self, buf);
         let key = page.get_record(page.get_size() - 1);
-        log::info!("Looking up for key {key:?}");
+        log::debug!("Looking up for key {key:?}");
 
         let buf = fs.get(self.fd, parent_id)?;
         let page = IndexPage::from_buf(self, buf);
@@ -253,7 +256,7 @@ impl Index {
         let pos = self.find(&page, &key);
         for i in pos..page.get_size() {
             let record = page.get_record(i);
-            log::info!("Slot {i} in parent is {record:?}");
+            log::debug!("Slot {i} in parent is {record:?}");
             if record.get_child() == child_id {
                 return Ok(Some(i));
             }
@@ -271,7 +274,7 @@ impl Index {
     /// This function uses binary search because otherwise it will cost too much time.
     fn find<'a, T: LinkedIndexPage<'a>>(&'a self, page: &'a T, key: &Record) -> usize {
         let size = page.get_size();
-        log::info!("Size of this index record is {size}");
+        log::debug!("Size of this index record is {size}");
         let mut ret = size - 1;
 
         let mut l: i32 = 0;
@@ -291,7 +294,7 @@ impl Index {
 
     /// Get the leaf node using a key.
     pub fn index(&self, fs: &mut PageCache, key: &Record) -> Result<Option<LeafIterator>> {
-        log::info!("Indexing {key:?}");
+        log::debug!("Indexing {key:?}");
 
         let root_page_id = if let Some(page_id) = self.schema.root {
             page_id
@@ -300,7 +303,7 @@ impl Index {
             return Ok(None);
         };
 
-        log::info!("Root is {root_page_id}");
+        log::debug!("Root is {root_page_id}");
 
         let mut page_id = root_page_id;
         let mut page_buf = fs.get(self.fd, page_id)?;
@@ -308,16 +311,16 @@ impl Index {
         while !page.is_leaf() {
             let pos = self.find(&page, key);
             page_id = page.get_record(pos).get_child();
-            log::info!("Walk into {page_id}");
+            log::debug!("Walk into {page_id}");
             page_buf = fs.get(self.fd, page_id)?;
             page = IndexPage::from_buf(self, page_buf);
         }
 
-        log::info!("Found leaf page {page_id}");
+        log::debug!("Found leaf page {page_id}");
 
         // Find the correct position to insert
         let mut pos = self.find(&page, key);
-        log::info!("Position is  {pos}");
+        log::debug!("Position is  {pos}");
         while &page.get_record(pos) < key {
             pos += 1;
             for (record, slot, _) in page.iter().skip(pos) {
@@ -328,22 +331,22 @@ impl Index {
             }
             if pos == page.get_size() {
                 // Go along the linked list
-                log::info!("Go along the linked list");
+                log::debug!("Go along the linked list");
                 if let Some(next) = page.get_next() {
                     page_id = next;
-                    log::info!("Walk into {page_id}");
+                    log::debug!("Walk into {page_id}");
                     page_buf = fs.get(self.fd, page_id)?;
                     page = IndexPage::from_buf(self, page_buf);
                     pos = 0;
                 } else {
                     // No more pages
-                    log::info!("No more pages");
+                    log::debug!("No more pages");
                     break;
                 }
             }
         }
 
-        log::info!("Found at {page_id} {pos}");
+        log::debug!("Found at {page_id} {pos}");
 
         Ok(Some((page_id, pos)))
     }
@@ -399,7 +402,7 @@ impl Index {
 
     /// Split one page into two.
     fn split(&mut self, fs: &mut PageCache, page_id: usize, new_page_id: usize) -> Result<()> {
-        log::info!("Splitting {page_id}, generating {new_page_id}");
+        log::debug!("Splitting {page_id}, generating {new_page_id}");
 
         let buf = fs.get_mut(self.fd, page_id)?;
         let mut page = IndexPageMut::from_buf(self, buf);
@@ -434,7 +437,7 @@ impl Index {
         page: usize,
         slot: usize,
     ) -> Result<()> {
-        log::info!("Adding ({key:?}, {page}, {slot}) into index");
+        log::debug!("Adding ({key:?}, {page}, {slot}) into index");
 
         let record = Record::new_with_index(key.fields, page, slot);
         if self.schema.root.is_none() {
@@ -479,7 +482,7 @@ impl Index {
 
                     // Create a new root
                     let new_root_page_id = self.new_page(fs)?;
-                    log::info!("Splitting root, new root is {new_root_page_id}");
+                    log::debug!("Splitting root, new root is {new_root_page_id}");
                     self.schema.root = Some(new_root_page_id);
 
                     // Update parent, and read max key
@@ -487,13 +490,13 @@ impl Index {
                     let mut page = IndexPageMut::from_buf(self, buf);
                     page.set_parent(Some(new_root_page_id));
                     let max_key = page.get_record(page.get_size() - 1).into_keys();
-                    log::info!("Set parent of {page_id} to {new_root_page_id}");
+                    log::debug!("Set parent of {page_id} to {new_root_page_id}");
 
                     let new_buf = fs.get_mut(self.fd, new_page_id)?;
                     let mut new_page = IndexPageMut::from_buf(self, new_buf);
                     new_page.set_parent(Some(new_root_page_id));
                     let new_max_key = new_page.get_record(new_page.get_size() - 1).into_keys();
-                    log::info!("Set parent of {new_page_id} to {new_root_page_id}");
+                    log::debug!("Set parent of {new_page_id} to {new_root_page_id}");
 
                     // Insert the split pages into the new root
                     let new_root_buf = fs.get_mut(self.fd, new_root_page_id)?;
@@ -850,7 +853,7 @@ impl<'a> IndexPageMut<'a> {
 
     /// Set a record in the page using a slot id.
     fn set_record(&mut self, slot: usize, record: Record) {
-        log::info!("Saving record {record:?} into slot {slot}");
+        log::debug!("Saving record {record:?} into slot {slot}");
         let offset = HEADER_SIZE + slot * self.record_size;
         let schema = if self.is_leaf() {
             &self.index.leaf_schema
@@ -904,7 +907,7 @@ impl<'a> IndexPageMut<'a> {
 
     /// Remove a range of records from the page.
     fn remove_range(&mut self, slots: Range<usize>) -> Vec<Record> {
-        log::info!("Removing range {slots:?}");
+        log::debug!("Removing range {slots:?}");
 
         assert!(self.get_size() >= slots.len());
         let mut ret = self.get_record_range(slots.clone());

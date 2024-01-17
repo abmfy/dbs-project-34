@@ -495,7 +495,7 @@ fn parse_desc_statement(system: &mut System, statement: Pairs<Rule>) -> Result<(
     });
 
     let constraints = schema.get_constraints().into();
-    let indexes = schema.get_indexes().into();
+    let indexes: Vec<_> = schema.get_indexes().into_iter().filter(|&index| index.explicit).cloned().collect();
 
     Ok((ret, QueryStat::Desc(constraints, indexes)))
 }
@@ -1010,7 +1010,7 @@ fn parse_add_index_statement(
     let table = table.unwrap();
     let columns = columns.unwrap();
 
-    system.add_index(table, index_name, &columns)?;
+    system.add_index(true, None, table, index_name, &columns)?;
 
     Ok((fresh_table(), QueryStat::Update(0)))
 }
