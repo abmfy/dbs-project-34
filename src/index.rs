@@ -243,12 +243,12 @@ impl Index {
         parent_id: usize,
         child_id: usize,
     ) -> Result<Option<usize>> {
-        log::info!("Looking up pos of {child_id} in {parent_id}");
+        log::debug!("Looking up pos of {child_id} in {parent_id}");
 
         let buf = fs.get(self.fd, child_id)?;
         let page = IndexPage::from_buf(self, buf);
         let key = page.get_record(page.get_size() - 1);
-        log::info!("Looking up for key {key:?}");
+        log::debug!("Looking up for key {key:?}");
 
         let buf = fs.get(self.fd, parent_id)?;
         let page = IndexPage::from_buf(self, buf);
@@ -258,7 +258,7 @@ impl Index {
         let pos = if pos > 0 { pos - 1 } else { 0 };
         for i in pos..page.get_size() {
             let record = page.get_record(i);
-            log::info!("Slot {i} in parent is {record:?}");
+            log::debug!("Slot {i} in parent is {record:?}");
             if record.get_child() == child_id {
                 return Ok(Some(i));
             }
@@ -275,7 +275,7 @@ impl Index {
     ///
     /// This function uses binary search because otherwise it will cost too much time.
     fn find<'a, T: LinkedIndexPage<'a>>(&'a self, page: &'a T, key: &Record) -> usize {
-        log::info!("Finding key {key:?}");
+        log::debug!("Finding key {key:?}");
 
         let size = page.get_size();
         log::debug!("Size of this index record is {size}");
@@ -295,7 +295,7 @@ impl Index {
                 ret = mid as usize;
             }
         }
-        log::info!("Find results in {ret}");
+        log::debug!("Find results in {ret}");
         ret
     }
 
@@ -633,10 +633,12 @@ impl Index {
                 log::info!("Borrowing from the left sibling");
                 self.update_key(fs, prev_id.unwrap())?;
                 self.update_key(fs, page_id)?;
+                break;
             } else if self.borrow(fs, Some(page_id), next_id)? {
                 log::info!("Borrowing from the right sibling");
                 self.update_key(fs, page_id)?;
                 self.update_key(fs, next_id.unwrap())?;
+                break;
             } else if self.merge(fs, prev_id, Some(page_id), true)? {
                 log::info!("Merging into the left sibling");
                 self.update_key(fs, prev_id.unwrap())?;
