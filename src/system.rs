@@ -541,8 +541,22 @@ impl System {
     ) -> Result<usize> {
         log::info!("Executing update statement");
 
+        let name = table;
+
         self.open_table(table)?;
-        let table = self.get_table_mut(table)?;
+        let table = self.get_table(table)?;
+        // Open all indexes of this table.
+        let indexes: Vec<_> = table
+            .get_schema()
+            .get_indexes()
+            .iter()
+            .map(|index| index.name.clone())
+            .collect();
+        for index in &indexes {
+            self.open_index(name, index)?;
+        }
+
+        let table = self.get_table_mut(name)?;
 
         for set_pair in set_pairs {
             set_pair.check(table.get_schema())?;
@@ -552,26 +566,83 @@ impl System {
         }
 
         let mut fs = FS.lock()?;
-        let ret = table.update(&mut fs, set_pairs, where_clauses)?;
+        let updated = table.update(&mut fs, set_pairs, where_clauses)?;
+        let updated_count = updated.len();
 
-        Ok(ret)
+        for (record, page, slot) in updated {
+            // Update indexes
+            for index_name in &indexes {
+                let index = self.get_index(name, index_name)?;
+                let table = self.get_table(name)?;
+
+                let columns: Vec<_> = index
+                    .get_columns()
+                    .iter()
+                    .cloned()
+                    .map(|c| Selector::Column(ColumnSelector(None, c.name)))
+                    .collect();
+                let selector = Selectors::Some(columns);
+                let key = record.select(&selector, table.get_schema());
+
+                let index = self.get_index_mut(name, index_name)?;
+                index.remove(&mut fs, key.clone(), page, slot)?;
+                index.insert(&mut fs, key, page, slot)?;
+            }
+        }
+
+        Ok(updated_count)
     }
 
     /// Execute delete statement.
     pub fn delete(&mut self, table: &str, where_clauses: &[WhereClause]) -> Result<usize> {
         log::info!("Executing delete statement");
 
+        let name = table;
+
         self.open_table(table)?;
-        let table = self.get_table_mut(table)?;
+        let table = self.get_table(table)?;
+        // Open all indexes of this table.
+        let indexes: Vec<_> = table
+            .get_schema()
+            .get_indexes()
+            .iter()
+            .map(|index| index.name.clone())
+            .collect();
+        for index in &indexes {
+            self.open_index(name, index)?;
+        }
+
+        let table = self.get_table_mut(name)?;
 
         for where_clause in where_clauses {
             where_clause.check(table.get_schema())?
         }
 
         let mut fs = FS.lock()?;
-        let ret = table.delete(&mut fs, where_clauses)?;
+        let deleted = table.delete(&mut fs, where_clauses)?;
+        let deleted_count = deleted.len();
 
-        Ok(ret)
+        for (record, page, slot) in deleted {
+            // Delete from indexes
+            for index_name in &indexes {
+                let index = self.get_index(name, index_name)?;
+                let table = self.get_table(name)?;
+
+                let columns: Vec<_> = index
+                    .get_columns()
+                    .iter()
+                    .cloned()
+                    .map(|c| Selector::Column(ColumnSelector(None, c.name)))
+                    .collect();
+                let selector = Selectors::Some(columns);
+                let key = record.select(&selector, table.get_schema());
+
+                let index = self.get_index_mut(name, index_name)?;
+                index.remove(&mut fs, key, page, slot)?;
+            }
+        }
+
+        Ok(deleted_count)
     }
 
     /// Match the condition against the index, and return the index leaf iterator
@@ -766,7 +837,10 @@ impl System {
         log::info!("Executing drop index statement");
 
         // Writing back dirty pages in the cache.
-        if let Some(index) = self.indexes.remove(&(table_name.to_owned(), index_name.to_owned())) {
+        if let Some(index) = self
+            .indexes
+            .remove(&(table_name.to_owned(), index_name.to_owned()))
+        {
             let mut fs = FS.lock()?;
             fs.close(index.get_fd())?;
         }

@@ -35,6 +35,15 @@ pub trait RecordSchema {
     fn get_cmp_keys(&self) -> usize {
         self.get_columns().len()
     }
+
+    fn get_record_size(&self) -> usize {
+        self.get_null_bitmap_size()
+            + self
+                .get_columns()
+                .iter()
+                .map(|col| col.typ.size())
+                .sum::<usize>()
+    }
 }
 
 /// A record.

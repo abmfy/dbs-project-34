@@ -243,20 +243,22 @@ impl Index {
         parent_id: usize,
         child_id: usize,
     ) -> Result<Option<usize>> {
-        log::debug!("Looking up pos of {child_id} in {parent_id}");
+        log::info!("Looking up pos of {child_id} in {parent_id}");
 
         let buf = fs.get(self.fd, child_id)?;
         let page = IndexPage::from_buf(self, buf);
         let key = page.get_record(page.get_size() - 1);
-        log::debug!("Looking up for key {key:?}");
+        log::info!("Looking up for key {key:?}");
 
         let buf = fs.get(self.fd, parent_id)?;
         let page = IndexPage::from_buf(self, buf);
 
         let pos = self.find(&page, &key);
+        // For case when deleted the max key
+        let pos = if pos > 0 { pos - 1 } else { 0 };
         for i in pos..page.get_size() {
             let record = page.get_record(i);
-            log::debug!("Slot {i} in parent is {record:?}");
+            log::info!("Slot {i} in parent is {record:?}");
             if record.get_child() == child_id {
                 return Ok(Some(i));
             }
@@ -273,6 +275,8 @@ impl Index {
     ///
     /// This function uses binary search because otherwise it will cost too much time.
     fn find<'a, T: LinkedIndexPage<'a>>(&'a self, page: &'a T, key: &Record) -> usize {
+        log::info!("Finding key {key:?}");
+
         let size = page.get_size();
         log::debug!("Size of this index record is {size}");
         let mut ret = size - 1;
@@ -280,8 +284,10 @@ impl Index {
         let mut l: i32 = 0;
         let mut r: i32 = size as i32 - 1;
         while l <= r {
+            log::info!("Current range is [{l}, {r}]");
             let mid = (l + r) / 2;
             let record = page.get_record(mid as usize);
+            log::info!("Comparing with {mid}: {record:?}");
             if &record < key {
                 l = mid + 1;
             } else {
@@ -289,6 +295,7 @@ impl Index {
                 ret = mid as usize;
             }
         }
+        log::info!("Find results in {ret}");
         ret
     }
 
@@ -349,27 +356,6 @@ impl Index {
         log::debug!("Found at {page_id} {pos}");
 
         Ok(Some((page_id, pos)))
-    }
-
-    /// Get the exact index of a key.
-    pub fn index_exact(&self, fs: &mut PageCache, key: &Record) -> Result<Option<LeafIterator>> {
-        let iter = self.index(fs, key)?;
-        if let Some((page_id, slot)) = iter {
-            let buf = fs.get(self.fd, page_id)?;
-            let page = IndexPage::from_buf(self, buf);
-            if slot < page.get_size() {
-                let record = page.get_record(slot);
-                if record == *key {
-                    Ok(Some((page_id, slot)))
-                } else {
-                    Ok(None)
-                }
-            } else {
-                Ok(None)
-            }
-        } else {
-            Ok(None)
-        }
     }
 
     /// Get the index record using a iterator.
@@ -558,6 +544,384 @@ impl Index {
 
         Ok(())
     }
+
+    /// Remove a key from the index.
+    pub fn remove(
+        &mut self,
+        fs: &mut PageCache,
+        key: Record,
+        page: usize,
+        slot: usize,
+    ) -> Result<()> {
+        log::info!("Removing ({key:?}, {page}, {slot}) from index");
+
+        assert_ne!(self.schema.root, None, "Removing from empty index");
+
+        // Find the position to remove
+        let mut iter = self.index(fs, &key)?.expect("Removing from empty index");
+        loop {
+            let (curr_key, curr_page, curr_slot) = self.get_record(fs, iter)?;
+            log::info!("Current index record: ({curr_key:?}, {curr_page}, {curr_slot})");
+            assert_eq!(curr_key, key, "Removing non-existing key");
+            if curr_page == page && curr_slot == slot {
+                let (page_id, slot) = iter;
+                let buf = fs.get_mut(self.fd, page_id)?;
+                let mut page = IndexPageMut::from_buf(self, buf);
+                log::info!("Size of {page_id} is {} before removal", page.get_size());
+                page.remove(slot);
+                self.resolve(fs, page_id)?;
+                return Ok(());
+            }
+            iter = self.inc_iter(fs, iter)?.expect("Removing non-existing key");
+        }
+    }
+
+    /// Recursively update the max key of nodes.
+    fn update_key(&mut self, fs: &mut PageCache, page_id: usize) -> Result<()> {
+        let mut curr_page_id = page_id;
+        loop {
+            let buf = fs.get_mut(self.fd, curr_page_id)?;
+            let page = IndexPage::from_buf(self, buf);
+            if page.get_size() == 0 {
+                log::info!("Page {page_id} is empty");
+                break;
+            }
+            let max_key = page.get_record(page.get_size() - 1).into_keys();
+            let parent_page_id = page.get_parent();
+
+            if let Some(parent_page_id) = parent_page_id {
+                let pos = self.lookup(fs, parent_page_id, curr_page_id)?.unwrap();
+
+                let parent_buf = fs.get_mut(self.fd, parent_page_id)?;
+                let mut parent_page = IndexPageMut::from_buf(self, parent_buf);
+                parent_page.set_record(pos, Record::new_with_child(max_key, curr_page_id));
+
+                curr_page_id = parent_page_id;
+            } else {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Unlink a node from its parent.
+    fn unlink(&mut self, fs: &mut PageCache, parent_id: usize, child_id: usize) -> Result<()> {
+        log::info!("Unlinking page {child_id} from {parent_id}");
+
+        let pos = self.lookup(fs, parent_id, child_id)?.unwrap();
+
+        let parent_buf = fs.get_mut(self.fd, parent_id).unwrap();
+        let mut parent_page = IndexPageMut::from_buf(self, parent_buf);
+        parent_page.remove(pos);
+
+        Ok(())
+    }
+
+    /// Resolve underflow.
+    fn resolve(&mut self, fs: &mut PageCache, mut page_id: usize) -> Result<()> {
+        log::info!("Resolving underflow in page {page_id}");
+
+        let buf = fs.get(self.fd, page_id)?;
+        let page = IndexPage::from_buf(self, buf);
+        let mut prev_id = page.get_prev();
+        let mut next_id = page.get_next();
+        let mut parent_id = page.get_parent();
+        let mut is_underflow = page.is_underflow();
+        log::info!("Size of page {page_id} is {}", page.get_size());
+        while is_underflow {
+            if self.borrow(fs, prev_id, Some(page_id))? {
+                log::info!("Borrowing from the left sibling");
+                self.update_key(fs, prev_id.unwrap())?;
+                self.update_key(fs, page_id)?;
+            } else if self.borrow(fs, Some(page_id), next_id)? {
+                log::info!("Borrowing from the right sibling");
+                self.update_key(fs, page_id)?;
+                self.update_key(fs, next_id.unwrap())?;
+            } else if self.merge(fs, prev_id, Some(page_id), true)? {
+                log::info!("Merging into the left sibling");
+                self.update_key(fs, prev_id.unwrap())?;
+
+                // Free merged page
+                self.unlink(fs, parent_id.unwrap(), page_id)?;
+                self.free_page(fs, page_id)?;
+
+                page_id = parent_id.expect("Root nodes will not underflow");
+                let buf = fs.get(self.fd, page_id)?;
+                let page = IndexPage::from_buf(self, buf);
+                prev_id = page.get_prev();
+                next_id = page.get_next();
+                parent_id = page.get_parent();
+                is_underflow = page.is_underflow();
+            } else if self.merge(fs, Some(page_id), next_id, false)? {
+                log::info!("Merging into the right sibling");
+                self.update_key(fs, next_id.unwrap())?;
+
+                // Free merged page
+                self.unlink(fs, parent_id.unwrap(), page_id)?;
+                self.free_page(fs, page_id)?;
+
+                page_id = parent_id.expect("Root nodes will not underflow");
+                let buf = fs.get(self.fd, page_id)?;
+                let page = IndexPage::from_buf(self, buf);
+                prev_id = page.get_prev();
+                next_id = page.get_next();
+                parent_id = page.get_parent();
+                is_underflow = page.is_underflow();
+            } else {
+                unreachable!("Failed to resolve underflow");
+            }
+        }
+
+        log::info!("Underflow resolved");
+        self.update_key(fs, page_id)?;
+
+        let root_id = self
+            .schema
+            .root
+            .expect("Root node should exist at this point");
+
+        let root_buf = fs.get(self.fd, root_id)?;
+        let root_page = IndexPage::from_buf(self, root_buf);
+        let root_size = root_page.get_size();
+
+        // Delete the root node if it has only one child
+        if !root_page.is_leaf() && root_size == 1 {
+            log::info!("Deleting root node because it has only one child");
+
+            let new_root_id = root_page.get_record(0).get_child();
+            self.schema.root = Some(new_root_id);
+            self.free_page(fs, root_id)?;
+
+            let new_root_buf = fs.get_mut(self.fd, new_root_id)?;
+            let mut new_root_page = IndexPageMut::from_buf(self, new_root_buf);
+            new_root_page.set_parent(None);
+        }
+
+        // Delete the root node if it is empty
+        if root_size == 0 {
+            log::info!("Deleting root node because it is empty");
+
+            self.schema.root = None;
+            self.free_page(fs, root_id)?;
+        }
+
+        Ok(())
+    }
+
+    /// Try to borrow some records from a sibling.
+    ///
+    /// # Returns
+    ///
+    /// Returns false if failed to borrow.
+    fn borrow(
+        &mut self,
+        fs: &mut PageCache,
+        left_id: Option<usize>,
+        right_id: Option<usize>,
+    ) -> Result<bool> {
+        if left_id.is_none() || right_id.is_none() {
+            return Ok(false);
+        }
+
+        let (left_id, right_id) = (left_id.unwrap(), right_id.unwrap());
+
+        let left_buf = fs.get(self.fd, left_id)?;
+        let left_page = IndexPage::from_buf(self, left_buf);
+        let left_size = left_page.get_size();
+
+        let max_records = left_page.get_max_records();
+
+        let right_buf = fs.get(self.fd, right_id)?;
+        let right_page = IndexPage::from_buf(self, right_buf);
+        let right_size = right_page.get_size();
+
+        let total_size = left_size + right_size;
+
+        // Can't borrow if total size is less than half of max size
+        if total_size < (max_records + 1) / 2 * 2 {
+            return Ok(false);
+        }
+
+        log::info!("Borrowing nodes between {left_id} and {right_id}");
+
+        let left_new_size = total_size / 2;
+        let right_new_size = total_size - left_new_size;
+
+        if left_size > left_new_size {
+            log::info!(
+                "Moving {} records from {left_id} to {right_id}",
+                left_size - left_new_size
+            );
+
+            let left_buf = fs.get_mut(self.fd, left_id)?;
+            let mut left_page = IndexPageMut::from_buf(self, left_buf);
+            let records = left_page.remove_range(left_new_size..left_size);
+
+            let children: Option<Vec<_>> = if !left_page.is_leaf() {
+                Some(records.iter().map(|r| r.get_child()).collect())
+            } else {
+                None
+            };
+
+            let right_buf = fs.get_mut(self.fd, right_id)?;
+            let mut right_page = IndexPageMut::from_buf(self, right_buf);
+            right_page.insert_range(0, records);
+
+            // Update parent information of children
+            if let Some(children) = children {
+                for child in children {
+                    let child_buf = fs.get_mut(self.fd, child)?;
+                    let mut child_page = IndexPageMut::from_buf(self, child_buf);
+                    child_page.set_parent(Some(right_id));
+                }
+            }
+        }
+
+        if right_size > right_new_size {
+            log::info!(
+                "Moving {} records from {right_id} to {left_id}",
+                right_size - right_new_size
+            );
+
+            let right_buf = fs.get_mut(self.fd, right_id)?;
+            let mut right_page = IndexPageMut::from_buf(self, right_buf);
+            let records = right_page.remove_range(0..right_size - right_new_size);
+
+            let children: Option<Vec<_>> = if !right_page.is_leaf() {
+                Some(records.iter().map(|r| r.get_child()).collect())
+            } else {
+                None
+            };
+
+            let left_buf = fs.get_mut(self.fd, left_id)?;
+            let mut left_page = IndexPageMut::from_buf(self, left_buf);
+            left_page.insert_range(left_size, records);
+
+            // Update parent information of children
+            if let Some(children) = children {
+                for child in children {
+                    let child_buf = fs.get_mut(self.fd, child)?;
+                    let mut child_page = IndexPageMut::from_buf(self, child_buf);
+                    child_page.set_parent(Some(left_id));
+                }
+            }
+        }
+
+        Ok(true)
+    }
+
+    /// Merge two nodes into one.
+    ///
+    /// # Returns
+    ///
+    /// Returns false if failed to merge.
+    fn merge(
+        &mut self,
+        fs: &mut PageCache,
+        left_id: Option<usize>,
+        right_id: Option<usize>,
+        into_left: bool,
+    ) -> Result<bool> {
+        if left_id.is_none() || right_id.is_none() {
+            return Ok(false);
+        }
+
+        let (left_id, right_id) = (left_id.unwrap(), right_id.unwrap());
+
+        let left_buf = fs.get(self.fd, left_id)?;
+        let left_page = IndexPage::from_buf(self, left_buf);
+        let left_size = left_page.get_size();
+
+        let max_records = left_page.get_max_records();
+
+        let right_buf = fs.get(self.fd, right_id)?;
+        let right_page = IndexPage::from_buf(self, right_buf);
+        let right_size = right_page.get_size();
+
+        let total_size = left_size + right_size;
+
+        log::info!("Left size is {left_size}, right size is {right_size}");
+
+
+        // Can't merge if total size is greater than max size
+        if total_size > max_records {
+            return Ok(false);
+        }
+
+        log::info!("Merging nodes between {left_id} and {right_id}");
+
+        if into_left {
+            log::info!("Merging {right_id} into {left_id}");
+
+            let right_buf = fs.get(self.fd, right_id)?;
+            let right_page = IndexPage::from_buf(self, right_buf);
+            let records = right_page.get_record_range(0..right_size);
+            let right_next = right_page.get_next();
+
+            let children: Option<Vec<_>> = if !right_page.is_leaf() {
+                Some(records.iter().map(|r| r.get_child()).collect())
+            } else {
+                None
+            };
+
+            let left_buf = fs.get_mut(self.fd, left_id)?;
+            let mut left_page = IndexPageMut::from_buf(self, left_buf);
+            left_page.insert_range(left_size, records);
+
+            // Update link information
+            left_page.set_next(right_next);
+            if let Some(right_next_id) = right_next {
+                let right_next_buf = fs.get_mut(self.fd, right_next_id)?;
+                let mut right_next_page = IndexPageMut::from_buf(self, right_next_buf);
+                right_next_page.set_prev(Some(left_id));
+            }
+
+            // Update parent information of children
+            if let Some(children) = children {
+                for child in children {
+                    let child_buf = fs.get_mut(self.fd, child)?;
+                    let mut child_page = IndexPageMut::from_buf(self, child_buf);
+                    child_page.set_parent(Some(left_id));
+                }
+            }
+        } else {
+            log::info!("Merging {left_id} into {right_id}");
+
+            let left_buf = fs.get(self.fd, left_id)?;
+            let left_page = IndexPage::from_buf(self, left_buf);
+            let records = left_page.get_record_range(0..left_size);
+            let left_prev = left_page.get_prev();
+
+            let children: Option<Vec<_>> = if !left_page.is_leaf() {
+                Some(records.iter().map(|r| r.get_child()).collect())
+            } else {
+                None
+            };
+
+            let right_buf = fs.get_mut(self.fd, right_id)?;
+            let mut right_page = IndexPageMut::from_buf(self, right_buf);
+            right_page.insert_range(0, records);
+
+            // Update link information
+            right_page.set_prev(left_prev);
+            if let Some(left_prev_id) = left_prev {
+                let left_prev_buf = fs.get_mut(self.fd, left_prev_id)?;
+                let mut left_prev_page = IndexPageMut::from_buf(self, left_prev_buf);
+                left_prev_page.set_next(Some(right_id));
+            }
+
+            // Update parent information of children
+            if let Some(children) = children {
+                for child in children {
+                    let child_buf = fs.get_mut(self.fd, child)?;
+                    let mut child_page = IndexPageMut::from_buf(self, child_buf);
+                    child_page.set_parent(Some(right_id));
+                }
+            }
+        }
+
+        Ok(true)
+    }
 }
 
 impl Drop for Index {
@@ -617,6 +981,11 @@ pub trait LinkedIndexPage<'a> {
     /// Get the maximum number of records in this page.
     fn get_max_records(&self) -> usize;
 
+    /// Is this page a root node.
+    fn is_root(&self) -> bool {
+        self.get_parent().is_none()
+    }
+
     /// Is this page a leaf node.
     fn is_leaf(&self) -> bool {
         self.get_buf()[LEAF_OFFSET] == 1
@@ -653,8 +1022,8 @@ pub trait LinkedIndexPage<'a> {
     }
 
     /// Is this page underflow.
-    fn is_underflow(&self, is_root: bool) -> bool {
-        !is_root && self.get_size() < (self.get_max_records() + 1) / 2
+    fn is_underflow(&self) -> bool {
+        !self.is_root() && self.get_size() < (self.get_max_records() + 1) / 2
     }
 
     /// Get a record from the page using a slot id.
@@ -704,11 +1073,9 @@ impl<'a> IndexPage<'a> {
         let leaf = buf[LEAF_OFFSET] == 1;
 
         let record_size = if leaf {
-            // 2 for ids of page and slot
-            index.index_size + 2 * LINK_SIZE
+            index.leaf_schema.get_record_size()
         } else {
-            // 1 for id of page
-            index.index_size + LINK_SIZE
+            index.internal_schema.get_record_size()
         };
 
         // -1 for the record that will be inserted
@@ -766,11 +1133,9 @@ impl<'a> IndexPageMut<'a> {
     /// Create an empty index page.
     fn new(index: &'a Index, buf: &'a mut [u8], leaf: bool) -> Self {
         let record_size = if leaf {
-            // 2 for ids of page and slot
-            index.index_size + 2 * LINK_SIZE
+            index.leaf_schema.get_record_size()
         } else {
-            // 1 for id of page
-            index.index_size + LINK_SIZE
+            index.internal_schema.get_record_size()
         };
 
         let max_records = (PAGE_SIZE - HEADER_SIZE) / record_size;
@@ -811,11 +1176,6 @@ impl<'a> IndexPageMut<'a> {
             record_size,
             max_records,
         }
-    }
-
-    /// Set whether this page is a leaf node.
-    fn set_leaf(&mut self, leaf: bool) {
-        self.buf[LEAF_OFFSET] = leaf as u8;
     }
 
     /// Set number of records in this page.
@@ -867,6 +1227,7 @@ impl<'a> IndexPageMut<'a> {
     fn shift(&mut self, slot: usize) {
         let begin = HEADER_SIZE + slot * self.record_size;
         let end = HEADER_SIZE + self.get_size() * self.record_size;
+        let end = end.min(PAGE_SIZE - self.record_size);
         self.buf.copy_within(begin..end, begin + self.record_size)
     }
 
@@ -883,6 +1244,9 @@ impl<'a> IndexPageMut<'a> {
         assert!(self.get_size() + records.len() <= self.get_max_records() + 1);
         let begin = HEADER_SIZE + slot * self.record_size;
         let end = HEADER_SIZE + (slot + records.len()) * self.record_size;
+        let end = end.min(PAGE_SIZE - records.len() * self.record_size);
+        log::info!("Shifting range {begin}..{end}");
+        log::info!("is_leaf: {}, end: {}", self.is_leaf(), end + records.len() * self.record_size);
         self.buf
             .copy_within(begin..end, begin + records.len() * self.record_size);
         for (i, record) in records.into_iter().enumerate() {

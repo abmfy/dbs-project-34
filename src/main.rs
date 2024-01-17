@@ -157,7 +157,7 @@ fn shell_main(mut system: System) -> Result<()> {
                     buf.push('\n');
                 }
             }
-            Err(ReadlineError::Interrupted) => continue,
+            Err(ReadlineError::Interrupted) => buf = None,
             Err(ReadlineError::Eof) => {
                 println!("Good morning, and in case I don't see you,\nGood afternoon,\nGood evening,\nAnd good night.");
                 break;

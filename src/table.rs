@@ -259,28 +259,32 @@ impl Table {
     }
 
     /// Update records in the table.
+    /// 
+    /// # Returns
+    /// 
+    /// Returns the updated record and their page and slot ids.
     pub fn update<'a>(
         &'a mut self,
         fs: &'a mut PageCache,
         set_pairs: &[SetPair],
         where_clauses: &[WhereClause],
-    ) -> Result<usize> {
+    ) -> Result<Vec<(Record, usize, usize)>> {
         log::debug!("Updating {set_pairs:?} where {where_clauses:?}");
 
-        let mut updated = 0usize;
+        let mut updated = vec![];
         for page_id in 0..self.schema.get_pages() {
             let page_buf = fs.get_mut(self.fd, page_id)?;
             let mut page = TablePageMut::new(self, page_buf);
 
             let mut to_update = vec![];
 
-            for (mut record, _, offset) in &page {
+            for (mut record, slot, offset) in &page {
                 if where_clauses
                     .iter()
                     .all(|clause| clause.matches(&record, &self.schema))
                     && record.update(set_pairs, &self.schema)
                 {
-                    updated += 1;
+                    updated.push((record.clone(), page_id, slot));
                     to_update.push((record, offset));
                 }
             }
@@ -294,14 +298,18 @@ impl Table {
     }
 
     /// Delete records from the table.
+    ///
+    /// # Returns
+    ///
+    /// Returns the deleted record and their page and slot ids.
     pub fn delete<'a>(
         &'a mut self,
         fs: &'a mut PageCache,
         where_clauses: &[WhereClause],
-    ) -> Result<usize> {
+    ) -> Result<Vec<(Record, usize, usize)>> {
         log::debug!("Deleting where {where_clauses:?}");
 
-        let mut deleted = 0usize;
+        let mut deleted = vec![];
 
         let mut free_page_id = self.schema.get_free();
         while let Some(page_id) = free_page_id {
@@ -315,7 +323,7 @@ impl Table {
                     .iter()
                     .all(|clause| clause.matches(&record, &self.schema))
                 {
-                    deleted += 1;
+                    deleted.push((record, page_id, slot));
                     to_delete.push(slot);
                 }
             }
@@ -340,7 +348,7 @@ impl Table {
                     .iter()
                     .all(|clause| clause.matches(&record, &self.schema))
                 {
-                    deleted += 1;
+                    deleted.push((record, page_id, slot));
                     // If the page is full, it will be marked
                     // as having free space due to this deletion.
                     if to_delete.is_empty() {
