@@ -262,13 +262,14 @@ impl Table {
     ///
     /// # Returns
     ///
-    /// Returns the updated record and their page and slot ids.
+    /// Returns the before and after value of updated records
+    /// and their page and slot ids.
     pub fn update<'a>(
         &'a mut self,
         fs: &'a mut PageCache,
         set_pairs: &[SetPair],
         where_clauses: &[WhereClause],
-    ) -> Result<Vec<(Record, usize, usize)>> {
+    ) -> Result<Vec<(Record, Record, usize, usize)>> {
         log::debug!("Updating {set_pairs:?} where {where_clauses:?}");
 
         let mut updated = vec![];
@@ -279,12 +280,13 @@ impl Table {
             let mut to_update = vec![];
 
             for (mut record, slot, offset) in &page {
+                let record_before = record.clone();
                 if where_clauses
                     .iter()
                     .all(|clause| clause.matches(&record, &self.schema))
                     && record.update(set_pairs, &self.schema)
                 {
-                    updated.push((record.clone(), page_id, slot));
+                    updated.push((record_before, record.clone(), page_id, slot));
                     to_update.push((record, offset));
                 }
             }
@@ -295,6 +297,38 @@ impl Table {
         }
 
         Ok(updated)
+    }
+
+    /// Update a record in the table, given page and slot.
+    pub fn update_page_slot(
+        &mut self,
+        fs: &mut PageCache,
+        page_id: usize,
+        slot: usize,
+        set_pairs: &[SetPair],
+        where_clauses: &[WhereClause],
+    ) -> Result<Option<(Record, Record)>> {
+        log::info!("Updating indexed record {page_id}, {slot}");
+
+        let page_buf = fs.get_mut(self.fd, page_id)?;
+        let mut page = TablePageMut::new(self, page_buf);
+
+        let mut record = page.get_record(slot);
+        let record_old = record.clone();
+
+        if where_clauses
+            .iter()
+            .all(|clause| clause.matches(&record, &self.schema))
+            && record.update(set_pairs, &self.schema)
+        {
+            let offset = 2 * LINK_SIZE
+                + self.schema.get_free_bitmap_size()
+                + slot * self.schema.get_record_size();
+            page.update(record.clone(), offset, &self.schema);
+            Ok(Some((record_old, record)))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Delete records from the table.

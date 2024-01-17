@@ -555,6 +555,13 @@ impl System {
 
         self.open_table(table)?;
         let table = self.get_table(table)?;
+        for set_pair in set_pairs {
+            set_pair.check(table.get_schema())?;
+        }
+        for where_clause in where_clauses {
+            where_clause.check(table.get_schema())?
+        }
+
         // Open all indexes of this table.
         let indexes: Vec<_> = table
             .get_schema()
@@ -566,20 +573,48 @@ impl System {
             self.open_index(name, index)?;
         }
 
-        let table = self.get_table_mut(name)?;
-
-        for set_pair in set_pairs {
-            set_pair.check(table.get_schema())?;
-        }
-        for where_clause in where_clauses {
-            where_clause.check(table.get_schema())?
-        }
-
         let mut fs = FS.lock()?;
-        let updated = table.update(&mut fs, set_pairs, where_clauses)?;
+
+        let mut updated = vec![];
+
+        // Check index availability
+        let index = self.match_index(&mut fs, name, where_clauses)?;
+        if let Some((index_name, left_iter, right_key)) = index {
+            log::info!("Using index {index_name}");
+
+            let table_name = name;
+
+            // Use index
+            let mut iter = left_iter;
+
+            loop {
+                let index = self.get_index(table_name, &index_name)?;
+                let (record, page, slot) = index.get_record(&mut fs, iter)?;
+                // Iteration ended
+                if record > right_key {
+                    break;
+                }
+                let table = self.get_table_mut(table_name)?;
+                if let Some((record_old, record_new)) =
+                    table.update_page_slot(&mut fs, page, slot, set_pairs, where_clauses)?
+                {
+                    updated.push((record_old, record_new, page, slot));
+                }
+                let index = self.get_index(table_name, &index_name)?;
+                if let Some(new_iter) = index.inc_iter(&mut fs, iter)? {
+                    iter = new_iter;
+                } else {
+                    break;
+                }
+            }
+        } else {
+            let table = self.get_table_mut(name)?;
+            updated = table.update(&mut fs, set_pairs, where_clauses)?;
+        }
+
         let updated_count = updated.len();
 
-        for (record, page, slot) in updated {
+        for (record_old, record_new, page, slot) in updated {
             // Update indexes
             for index_name in &indexes {
                 let index = self.get_index(name, index_name)?;
@@ -592,11 +627,13 @@ impl System {
                     .map(|c| Selector::Column(ColumnSelector(None, c.name)))
                     .collect();
                 let selector = Selectors::Some(columns);
-                let key = record.select(&selector, table.get_schema());
+
+                let key_old = record_old.select(&selector, table.get_schema());
+                let key_new = record_new.select(&selector, table.get_schema());
 
                 let index = self.get_index_mut(name, index_name)?;
-                index.remove(&mut fs, key.clone(), page, slot)?;
-                index.insert(&mut fs, key, page, slot)?;
+                index.remove(&mut fs, key_old, page, slot)?;
+                index.insert(&mut fs, key_new, page, slot)?;
             }
         }
 
