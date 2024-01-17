@@ -611,6 +611,11 @@ impl System {
 
         self.open_table(table)?;
         let table = self.get_table(table)?;
+
+        for where_clause in where_clauses {
+            where_clause.check(table.get_schema())?
+        }
+
         // Open all indexes of this table.
         let indexes: Vec<_> = table
             .get_schema()
@@ -622,14 +627,43 @@ impl System {
             self.open_index(name, index)?;
         }
 
-        let table = self.get_table_mut(name)?;
-
-        for where_clause in where_clauses {
-            where_clause.check(table.get_schema())?
-        }
+        let mut deleted = vec![];
 
         let mut fs = FS.lock()?;
-        let deleted = table.delete(&mut fs, where_clauses)?;
+
+        // Check index availability
+        let index = self.match_index(&mut fs, name, where_clauses)?;
+        if let Some((index_name, left_iter, right_key)) = index {
+            log::info!("Using index {index_name}");
+
+            let table_name = name;
+
+            // Use index
+            let mut iter = left_iter;
+
+            loop {
+                let index = self.get_index(table_name, &index_name)?;
+                let (record, page, slot) = index.get_record(&mut fs, iter)?;
+                // Iteration ended
+                if record > right_key {
+                    break;
+                }
+                let table = self.get_table_mut(table_name)?;
+                if let Some(record) = table.delete_page_slot(&mut fs, page, slot, where_clauses)? {
+                    deleted.push((record, page, slot));
+                }
+                let index = self.get_index(table_name, &index_name)?;
+                if let Some(new_iter) = index.inc_iter(&mut fs, iter)? {
+                    iter = new_iter;
+                } else {
+                    break;
+                }
+            }
+        } else {
+            let table = self.get_table_mut(name)?;
+            deleted = table.delete(&mut fs, where_clauses)?;
+        }
+
         let deleted_count = deleted.len();
 
         for (record, page, slot) in deleted {

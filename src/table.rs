@@ -372,6 +372,36 @@ impl Table {
         Ok(deleted)
     }
 
+    /// Delete a record in the table, given page and slot.
+    pub fn delete_page_slot(
+        &mut self,
+        fs: &mut PageCache,
+        page_id: usize,
+        slot: usize,
+        where_clauses: &[WhereClause],
+    ) -> Result<Option<Record>> {
+        log::info!("Deleting indexed record {page_id}, {slot}");
+
+        let page_buf = fs.get_mut(self.fd, page_id)?;
+        let mut page = TablePageMut::new(self, page_buf);
+
+        let record = page.get_record(slot);
+
+        if where_clauses
+            .iter()
+            .all(|clause| clause.matches(&record, &self.schema))
+        {
+            page.free(slot);
+            // Mark the page as free due to this deletion
+            if page.is_full() {
+                self.free_page(fs, page_id)?;
+            }
+            Ok(Some(record))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Save an index schema into the table.
     pub fn add_index(&mut self, schema: IndexSchema) {
         self.schema.add_index(schema);
@@ -443,6 +473,11 @@ pub trait LinkedPage<'a> {
     /// Check if the i-th slot is free.
     fn is_free(&self, i: usize) -> bool {
         !self.get_occupied().contains(i)
+    }
+
+    /// Check if this page is full.
+    fn is_full(&self) -> bool {
+        self.get_occupied().len() == self.get_max_records()
     }
 }
 
