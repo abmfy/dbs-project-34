@@ -53,10 +53,13 @@ fn batch_main(mut system: System) -> Result<()> {
             match result {
                 Ok((table, stat)) => {
                     table.to_csv(io::stdout())?;
-                    if let QueryStat::Desc(constraints) = stat {
+                    if let QueryStat::Desc(constraints, indexes) = stat {
                         println!();
                         for constraint in constraints {
                             println!("{constraint}");
+                        }
+                        for index in indexes {
+                            println!("{index}");
                         }
                     }
                 }
@@ -127,9 +130,12 @@ fn shell_main(mut system: System) -> Result<()> {
                                             print!("{size} rows affected");
                                         }
                                     }
-                                    QueryStat::Desc(constraints) => {
+                                    QueryStat::Desc(constraints, indexes) => {
                                         for constraint in constraints {
                                             println!("{constraint}");
+                                        }
+                                        for index in indexes {
+                                            println!("{index}");
                                         }
                                         print!("Desc OK");
                                     }

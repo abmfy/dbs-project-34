@@ -30,9 +30,13 @@ pub enum Error {
     TableNotFound(String),
     #[error("Column `{0}` not found")]
     ColumnNotFound(String),
+    #[error("Index `{0}` not found")]
+    IndexNotFound(String),
 
     #[error("Duplicate column name `{0}`")]
     DuplicateColumn(String),
+    #[error("Duplicate index on columns {0:?}")]
+    DuplicateIndex(Vec<String>),
     #[error("Multiple primary keys on table `{0}`")]
     MultiplePrimaryKeys(String),
 

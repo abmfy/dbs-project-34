@@ -13,10 +13,14 @@ use bit_set::BitSet;
 use uuid::Uuid;
 
 use crate::config::LINK_SIZE;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::file::PageCache;
+use crate::index::{Index, IndexSchema};
 use crate::record::Record;
 use crate::schema::{Selectors, SetPair, TableSchema, WhereClause};
+
+/// Select result containing slot id.
+pub type SelectResult = (Record, usize);
 
 /// A table.
 pub struct Table {
@@ -161,13 +165,10 @@ impl Table {
     ) -> Result<Vec<Record>> {
         let mut records = Vec::new();
 
-        // log::info!("{}", self.schema.get_pages());
-
         for page_id in 0..self.schema.get_pages() {
             let page_buf = fs.get(self.fd, page_id)?;
             let page = TablePage::new(self, page_buf);
 
-            // let mut record_count = 0;
             for (record, _, _) in &page {
                 if where_clauses
                     .iter()
@@ -177,10 +178,28 @@ impl Table {
                     records.push(record.select(selector, &self.schema));
                 }
             }
-            // log::info!("Page {page_id} has {record_count} records");
         }
 
         Ok(records)
+    }
+
+    /// Read a block of records out of the table.
+    pub fn select_page(
+        &self,
+        fs: &mut PageCache,
+        page_id: usize,
+        selector: &Selectors,
+    ) -> Result<Vec<SelectResult>> {
+        let page_buf = fs.get(self.fd, page_id)?;
+        let page = TablePage::new(self, page_buf);
+
+        let mut ret = Vec::new();
+
+        for (record, slot, _) in &page {
+            ret.push((record.select(selector, &self.schema), slot));
+        }
+
+        Ok(ret)
     }
 
     /// Insert a record into the table.
@@ -308,6 +327,11 @@ impl Table {
         }
 
         Ok(deleted)
+    }
+
+    /// Save an index schema into the table.
+    pub fn add_index(&mut self, schema: IndexSchema) {
+        self.schema.add_index(schema);
     }
 }
 

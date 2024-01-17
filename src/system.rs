@@ -8,8 +8,11 @@ use csv::ReaderBuilder;
 
 use crate::error::{Error, Result};
 use crate::file::FS;
+use crate::index::{Index, IndexSchema};
 use crate::record::{Record, RecordSchema};
-use crate::schema::{Schema, Selectors, SetPair, TableSchema, Value, WhereClause};
+use crate::schema::{
+    ColumnSelector, Schema, Selector, Selectors, SetPair, TableSchema, Value, WhereClause,
+};
 use crate::table::Table;
 
 /// Database system manager.
@@ -22,6 +25,8 @@ pub struct System {
     db: Option<PathBuf>,
     /// Mapping from table name to the table.
     tables: HashMap<String, Table>,
+    /// Mapping from index name to the index.
+    indexes: HashMap<(String, String), Index>,
 }
 
 impl System {
@@ -32,6 +37,7 @@ impl System {
             db_name: None,
             db: None,
             tables: HashMap::new(),
+            indexes: HashMap::new(),
         }
     }
 
@@ -62,6 +68,7 @@ impl System {
         log::info!("Switching to database {}, flushing cache", name);
         FS.lock()?.clear()?;
         self.tables.clear();
+        self.indexes.clear();
 
         self.db_name = Some(name.to_owned());
         self.db = Some(path);
@@ -128,6 +135,7 @@ impl System {
                 self.db = None;
                 FS.lock()?.clear()?;
                 self.tables.clear();
+                self.indexes.clear();
             }
         }
 
@@ -141,7 +149,11 @@ impl System {
     }
 
     /// Open a table, hold its file descriptor and schema.
-    fn open_table(&mut self, name: &str) -> Result<Table> {
+    fn open_table(&mut self, name: &str) -> Result<()> {
+        if self.tables.contains_key(name) {
+            return Ok(());
+        }
+
         let db = self.db.as_ref().ok_or(Error::NoDatabaseSelected)?;
         let table = db.join(name);
 
@@ -158,29 +170,64 @@ impl System {
         let file = File::open(meta.clone())?;
         let schema = serde_json::from_reader(file)?;
 
-        Ok(Table::new(fd, TableSchema::new(schema, &meta)?))
+        let table = Table::new(fd, TableSchema::new(schema, &meta)?);
+
+        self.tables.insert(name.to_owned(), table);
+
+        Ok(())
     }
 
     /// Get a table for read.
-    fn get_table(&mut self, name: &str) -> Result<&Table> {
-        if self.tables.contains_key(name) {
-            return Ok(self.tables.get(name).unwrap());
-        }
-
-        let table = self.open_table(name)?;
-        self.tables.insert(name.to_owned(), table);
-        Ok(self.tables.get(name).unwrap())
+    fn get_table(&self, name: &str) -> Result<&Table> {
+        self.tables
+            .get(name)
+            .ok_or(Error::TableNotFound(name.to_owned()))
     }
 
     /// Get a table for write.
     fn get_table_mut(&mut self, name: &str) -> Result<&mut Table> {
-        if self.tables.contains_key(name) {
-            return Ok(self.tables.get_mut(name).unwrap());
-        }
+        self.tables
+            .get_mut(name)
+            .ok_or(Error::TableNotFound(name.to_owned()))
+    }
 
-        let table = self.open_table(name)?;
-        self.tables.insert(name.to_owned(), table);
-        Ok(self.tables.get_mut(name).unwrap())
+    /// Open a index, hold its file descriptor and schema.
+    fn open_index(&mut self, table_name: &str, name: &str) -> Result<()> {
+        let db = self.db.as_ref().ok_or(Error::NoDatabaseSelected)?;
+        let table = db.join(table_name);
+
+        let mut fs = FS.lock()?;
+
+        let fd = fs.open(&table.join(format!("{name}.index.bin")))?;
+
+        let meta = table.join(format!("{name}.index.json"));
+        let file = File::open(meta.clone())?;
+        let schema = serde_json::from_reader(file)?;
+
+        let table = self.get_table(table_name)?;
+
+        self.indexes.insert(
+            (table_name.to_owned(), name.to_owned()),
+            Index::new(fd, schema, &meta, table.get_schema()),
+        );
+
+        Ok(())
+    }
+
+    /// Get a index for read.
+    fn get_index(&self, table: &str, name: &str) -> Result<&Index> {
+        let key = (table.to_owned(), name.to_owned());
+        self.indexes
+            .get(&key)
+            .ok_or(Error::IndexNotFound(name.to_owned()))
+    }
+
+    /// Get a index for write.
+    fn get_index_mut(&mut self, table: &str, name: &str) -> Result<&mut Index> {
+        let key = (table.to_owned(), name.to_owned());
+        self.indexes
+            .get_mut(&key)
+            .ok_or(Error::IndexNotFound(name.to_owned()))
     }
 
     /// Get a list of tables in current database.
@@ -207,6 +254,7 @@ impl System {
     pub fn get_table_schema(&mut self, name: &str) -> Result<&TableSchema> {
         log::info!("Getting schema of table {}", name);
 
+        self.open_table(name)?;
         let table = self.get_table(name)?;
 
         Ok(table.get_schema())
@@ -233,8 +281,7 @@ impl System {
         let mut file = fs::File::create(meta)?;
         serde_json::to_writer(&mut file, &schema)?;
 
-        let table = self.open_table(name)?;
-        self.tables.insert(name.to_owned(), table);
+        self.open_table(name)?;
 
         Ok(())
     }
@@ -247,6 +294,17 @@ impl System {
         if let Some(table) = self.tables.remove(name) {
             let mut fs = FS.lock()?;
             fs.close(table.get_fd())?;
+        }
+        let keys: Vec<_> = self
+            .indexes
+            .keys()
+            .filter(|(table_name, _)| table_name == name)
+            .map(|k| k.clone())
+            .collect();
+        for index in keys {
+            let index = self.indexes.remove(&index).unwrap();
+            let mut fs = FS.lock()?;
+            fs.close(index.get_fd())?;
         }
 
         let db = self.db.as_ref().ok_or(Error::NoDatabaseSelected)?;
@@ -266,6 +324,7 @@ impl System {
     pub fn load_table(&mut self, name: &str, file: &Path) -> Result<usize> {
         log::info!("Loading data into table {}", name);
 
+        self.open_table(name)?;
         let table = self.get_table_mut(name)?;
 
         let mut count = 0;
@@ -296,6 +355,7 @@ impl System {
 
         assert_eq!(tables.len(), 1, "Joining is not supported yet");
 
+        self.open_table(tables[0])?;
         let table = self.get_table(tables[0])?;
 
         selectors.check(table.get_schema())?;
@@ -313,6 +373,7 @@ impl System {
     pub fn insert(&mut self, table: &str, records: Vec<Record>) -> Result<()> {
         log::info!("Executing insert statement");
 
+        self.open_table(table)?;
         let table = self.get_table_mut(table)?;
 
         let schema = table.get_schema();
@@ -338,6 +399,7 @@ impl System {
     ) -> Result<usize> {
         log::info!("Executing update statement");
 
+        self.open_table(table)?;
         let table = self.get_table_mut(table)?;
 
         for set_pair in set_pairs {
@@ -357,6 +419,7 @@ impl System {
     pub fn delete(&mut self, table: &str, where_clauses: &[WhereClause]) -> Result<usize> {
         log::info!("Executing delete statement");
 
+        self.open_table(table)?;
         let table = self.get_table_mut(table)?;
 
         for where_clause in where_clauses {
@@ -367,6 +430,85 @@ impl System {
         let ret = table.delete(&mut fs, where_clauses)?;
 
         Ok(ret)
+    }
+
+    /// Initialize index, adding all existing records into the index.
+    fn init_index(&mut self, table_name: &str, index_name: &str, columns: &[&str]) -> Result<()> {
+        log::info!("Initializing index {table_name}.{index_name}");
+
+        let table = self.get_table(table_name)?;
+        let columns: Vec<_> = columns
+            .iter()
+            .map(|&s| Selector::Column(ColumnSelector(None, s.to_owned())))
+            .collect();
+        let selectors = Selectors::Some(columns);
+
+        let mut fs = FS.lock()?;
+
+        let pages = table.get_schema().get_pages();
+        for i in 0..pages {
+            log::info!("Adding index for page {i}");
+            let table = self.get_table(table_name)?;
+            let keys = table.select_page(&mut fs, i, &selectors)?;
+            let index = self.get_index_mut(table_name, &index_name)?;
+            for (key, slot) in keys {
+                index.insert(&mut fs, key, i, slot)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Execute add index statement.
+    pub fn add_index(
+        &mut self,
+        table_name: &str,
+        index_name: Option<&str>,
+        columns: &[&str],
+    ) -> Result<()> {
+        log::info!("Executing add index statement");
+
+        self.open_table(table_name)?;
+        let table = self.get_table(table_name)?;
+
+        let schema = table.get_schema();
+        for &column in columns {
+            if !schema.has_column(column) {
+                return Err(Error::ColumnNotFound(column.to_owned()));
+            }
+        }
+
+        for index in schema.get_indexes() {
+            if index.columns == columns {
+                return Err(Error::DuplicateIndex(
+                    columns.iter().map(|&s| s.to_owned()).collect(),
+                ));
+            }
+        }
+
+        let schema = IndexSchema::new(true, index_name, columns);
+        let index_name = schema.name.clone();
+
+        let db = self.db.as_ref().ok_or(Error::NoDatabaseSelected)?;
+        let table = db.join(table_name);
+
+        let filename = format!("{}.index.bin", index_name);
+        let data = table.join(filename);
+        fs::File::create(data)?;
+
+        let filename = format!("{}.index.json", index_name);
+        let meta = table.join(filename);
+        let mut file = fs::File::create(meta)?;
+        serde_json::to_writer(&mut file, &schema)?;
+
+        self.open_table(table_name)?;
+        let table = self.get_table_mut(table_name)?;
+        table.add_index(schema);
+
+        self.open_index(table_name, &index_name)?;
+        self.init_index(table_name, &index_name, columns)?;
+
+        Ok(())
     }
 }
 

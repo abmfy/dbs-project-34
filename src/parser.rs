@@ -12,6 +12,7 @@ use prettytable::{format::consts::FORMAT_NO_LINESEP_WITH_TITLE, row, Row, Table}
 
 use crate::{
     error::{Error, Result},
+    index::IndexSchema,
     record::{Record, RecordSchema},
     schema::{
         Column, ColumnSelector, Constraint, Expression, Field, Operator, Schema, Selector,
@@ -27,7 +28,7 @@ pub enum QueryStat {
     /// Number of rows affected.
     Update(usize),
     /// Description of a table.
-    Desc(Vec<Constraint>),
+    Desc(Vec<Constraint>, Vec<IndexSchema>),
 }
 
 #[derive(Parser)]
@@ -70,6 +71,10 @@ pub fn parse<'a>(
             }
             Rule::table_statement => {
                 let result = parse_table_statement(system, statement.into_inner());
+                ret.push((command, result));
+            }
+            Rule::alter_statement => {
+                let result = parse_alter_statement(system, statement.into_inner());
                 ret.push((command, result));
             }
             _ => continue,
@@ -450,6 +455,7 @@ fn parse_create_table_statement(
             full: None,
             columns,
             constraints,
+            indexes: vec![],
         },
     )?;
 
@@ -489,8 +495,9 @@ fn parse_desc_statement(system: &mut System, statement: Pairs<Rule>) -> Result<(
     });
 
     let constraints = schema.get_constraints().into();
+    let indexes = schema.get_indexes().into();
 
-    Ok((ret, QueryStat::Desc(constraints)))
+    Ok((ret, QueryStat::Desc(constraints, indexes)))
 }
 
 fn parse_load_statement(system: &mut System, statement: Pairs<Rule>) -> Result<(Table, QueryStat)> {
@@ -961,4 +968,48 @@ fn parse_delete_statement(
     ret.add_row(row![rows]);
 
     Ok((ret, QueryStat::Update(rows)))
+}
+
+fn parse_alter_statement(
+    system: &mut System,
+    statement: Pairs<Rule>,
+) -> Result<(Table, QueryStat)> {
+    log::debug!("Parsing alter statement: {statement:?}");
+
+    let pair = statement.into_iter().next().unwrap();
+    match pair.as_rule() {
+        Rule::alter_add_index => parse_add_index_statement(system, pair.into_inner()),
+        _ => unimplemented!(),
+    }
+}
+
+fn parse_add_index_statement(
+    system: &mut System,
+    pairs: Pairs<Rule>,
+) -> Result<(Table, QueryStat)> {
+    let mut table = None;
+    let mut index_name = None;
+    let mut columns = None;
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::identifier => {
+                table = Some(pair.as_str());
+            }
+            Rule::index_identifier => {
+                index_name = Some(pair.as_str());
+            }
+            Rule::identifiers => {
+                columns = Some(parse_identifiers(pair.into_inner())?);
+            }
+            _ => continue,
+        }
+    }
+
+    let table = table.unwrap();
+    let columns = columns.unwrap();
+
+    system.add_index(table, index_name, &columns)?;
+
+    Ok((fresh_table(), QueryStat::Update(0)))
 }

@@ -51,14 +51,103 @@ pub trait RecordSchema {
 #[derive(Clone, Debug)]
 pub struct Record {
     pub fields: Vec<Value>,
-    cmp_keys: usize,
+    pub index_keys: usize,
 }
 
 impl Record {
     /// Create a new record.
     pub fn new(fields: Vec<Value>) -> Self {
-        let cmp_keys = fields.len();
-        Self { fields, cmp_keys }
+        let index_keys = fields.len();
+        Self { fields, index_keys }
+    }
+
+    /// Create a new record with page and slot field for indexing.
+    pub fn new_with_index(mut fields: Vec<Value>, page: usize, slot: usize) -> Self {
+        let index_keys = fields.len();
+        fields.push(Value::Int(page as i32));
+        fields.push(Value::Int(slot as i32));
+        Self { fields, index_keys }
+    }
+
+    /// Create a new record with child field for indexing.
+    pub fn new_with_child(mut fields: Vec<Value>, child: usize) -> Self {
+        let index_keys = fields.len();
+        fields.push(Value::Int(child as i32));
+        Self { fields, index_keys }
+    }
+
+    /// Turn the record into keys used for indexing.
+    pub fn into_keys(self) -> Vec<Value> {
+        self.fields[..self.index_keys].to_vec()
+    }
+
+    /// Cast the leaf index record into an internal index record.
+    ///
+    /// # Panics
+    ///
+    /// Panics if index out of bound.
+    /// Be careful only to call this method on leaf index record.
+    pub fn to_internal(self) -> Self {
+        let mut fields = self.fields;
+        fields.pop();
+        Self {
+            fields,
+            index_keys: self.index_keys,
+        }
+    }
+
+    /// Get the child field for internal index record.
+    ///
+    /// # Panics
+    ///
+    /// Panics if index out of bound or type wrong.
+    /// Be careful only to call this method on internal index record.
+    pub fn get_child(&self) -> usize {
+        match &self.fields[self.fields.len() - 1] {
+            Value::Int(child) => *child as usize,
+            _ => panic!("Wrong type"),
+        }
+    }
+
+    /// Get the page and slot fields for leaf index record.
+    ///
+    /// # Panics
+    ///
+    /// Panics if index out of bound or type wrong.
+    /// Be careful only to call this method on internal index record.
+    pub fn get_index(&self) -> (usize, usize) {
+        let page = match &self.fields[self.fields.len() - 2] {
+            Value::Int(page) => *page as usize,
+            _ => panic!("Wrong type"),
+        };
+        let slot = match &self.fields[self.fields.len() - 1] {
+            Value::Int(slot) => *slot as usize,
+            _ => panic!("Wrong type"),
+        };
+        (page, slot)
+    }
+
+    /// Set the child field for internal index record.
+    ///
+    /// # Panics
+    ///
+    /// Panics if index out of bound.
+    /// Be careful only to call this method on internal index record.
+    pub fn set_child(&mut self, child: usize) {
+        let size = self.fields.len();
+        self.fields[size - 1] = Value::Int(child as i32);
+    }
+
+    /// Set the page and slot fields for leaf index record.
+    ///
+    /// # Panics
+    ///
+    /// Panics if index out of bound.
+    /// Be careful only to call this method on internal index record.
+    pub fn set_index(&mut self, page: usize, slot: usize) {
+        let size = self.fields.len();
+        self.fields[size - 2] = Value::Int(page as i32);
+        self.fields[size - 1] = Value::Int(slot as i32);
     }
 
     /// Check the record against a schema.
@@ -111,7 +200,7 @@ impl Record {
         }
         Self {
             fields,
-            cmp_keys: schema.get_cmp_keys(),
+            index_keys: schema.get_cmp_keys(),
         }
     }
 
@@ -191,13 +280,13 @@ impl Record {
 
 impl PartialEq for Record {
     fn eq(&self, other: &Self) -> bool {
-        self.fields[..self.cmp_keys] == other.fields[..other.cmp_keys]
+        self.fields[..self.index_keys] == other.fields[..other.index_keys]
     }
 }
 
 impl PartialOrd for Record {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.fields[..self.cmp_keys].partial_cmp(&other.fields[..other.cmp_keys])
+        self.fields[..self.index_keys].partial_cmp(&other.fields[..other.index_keys])
     }
 }
 
@@ -241,6 +330,7 @@ mod tests {
                     },
                 ],
                 constraints: vec![],
+                indexes: vec![],
             },
             &PathBuf::new(),
         )
@@ -253,7 +343,7 @@ mod tests {
                 Value::Varchar("Alice".to_string()),
                 Value::Float(100.0),
             ],
-            cmp_keys: 3,
+            index_keys: 3,
         };
         record.save_into(&mut buf, 0, &schema);
 
@@ -277,7 +367,7 @@ mod tests {
                 Value::Varchar("Bob".to_string()),
                 Value::Null,
             ],
-            cmp_keys: 3,
+            index_keys: 3,
         };
         record.save_into(&mut buf, 0, &schema);
 
@@ -362,6 +452,7 @@ mod tests {
                     },
                 ],
                 constraints: vec![],
+                indexes: vec![],
             },
             &PathBuf::new(),
         )
@@ -380,7 +471,7 @@ mod tests {
                 Value::Null,
                 Value::Null,
             ],
-            cmp_keys: 9,
+            index_keys: 9,
         };
 
         record.save_into(&mut buf, 0, &schema);

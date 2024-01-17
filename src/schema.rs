@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{LINK_SIZE, PAGE_SIZE};
 use crate::error::{Error, Result};
+use crate::index::IndexSchema;
 use crate::record::Record;
 use crate::record::RecordSchema;
 
@@ -140,6 +141,14 @@ impl Column {
     }
 }
 
+impl PartialEq for Column {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for Column {}
+
 /// A constraint on a table.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Constraint {
@@ -253,7 +262,7 @@ impl SetPair {
     /// Check the set pair against a table schema.
     pub fn check(&self, schema: &TableSchema) -> Result<()> {
         let SetPair(column, value) = &self;
-        if !schema.has_column(&column) {
+        if !schema.has_column(column) {
             return Err(Error::ColumnNotFound(column.to_owned()));
         }
         let column = schema.get_column(column);
@@ -349,6 +358,8 @@ pub struct Schema {
     pub columns: Vec<Column>,
     /// Constraints on the table.
     pub constraints: Vec<Constraint>,
+    /// Indexes on the table.
+    pub indexes: Vec<IndexSchema>,
 }
 
 /// A wrapped table schema.
@@ -443,6 +454,16 @@ impl TableSchema {
     /// Return a reference to table constraints.
     pub fn get_constraints(&self) -> &[Constraint] {
         &self.constraints
+    }
+
+    /// Return a reference to table indexes.
+    pub fn get_indexes(&self) -> &[IndexSchema] {
+        &self.schema.indexes
+    }
+
+    /// Add a index to the table.
+    pub fn add_index(&mut self, index: IndexSchema) {
+        self.schema.indexes.push(index);
     }
 
     /// Get a column by its name.
