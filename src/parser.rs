@@ -1029,7 +1029,7 @@ fn parse_add_index_statement(
     let table = table.unwrap();
     let columns = columns.unwrap();
 
-    system.add_index(true, None, table, index_name, &columns, false)?;
+    system.add_index(true, None, table, index_name, &columns, true)?;
 
     Ok((fresh_table(), QueryStat::Update(0)))
 }

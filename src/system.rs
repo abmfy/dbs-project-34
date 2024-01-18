@@ -791,7 +791,7 @@ impl System {
                         columns,
                         ref_table,
                         ref_columns,
-                    } => todo!(),
+                    } => (),
                 }
             }
 
@@ -1057,6 +1057,7 @@ impl System {
 
         // The conditions are only on one column, and the comparisons are all values
         for index in table.get_schema().get_indexes() {
+            log::info!("Checking index {}", index.name);
             if index.columns.len() == 1 && known_columns.contains(&index.columns[0]) {
                 let left = left.remove(&index.columns[0]).unwrap_or_default();
                 let right = right.remove(&index.columns[0]).unwrap_or_default();
@@ -1068,11 +1069,15 @@ impl System {
                 let left = left.iter().max().unwrap_or(&i32::MIN);
                 let right = right.iter().min().unwrap_or(&i32::MAX);
 
+                log::info!("Left bound: {left}, right bound: {right}");
+
                 let left_key = Record::new(vec![Value::Int(*left)]);
                 let right_key = Record::new(vec![Value::Int(*right)]);
 
                 let left_iter = index.index(fs, &left_key)?;
                 let right_iter = index.index(fs, &right_key)?;
+
+                log::info!("Left iter: {left_iter:?}, right iter: {right_iter:?}");
 
                 if left_iter.is_none() {
                     return Ok(None);
