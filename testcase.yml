@@ -4,8 +4,9 @@ compile:
 run:
   commands: "./target/release/yoursql"
   flags:
-    - data
+    # - data
     - query
     - index
     - join
     - pk
+    - comb

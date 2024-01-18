@@ -85,7 +85,19 @@ pub fn parse<'a>(
     ret
 }
 
-fn parse_identifiers(pairs: Pairs<Rule>) -> Result<Vec<&str>> {
+fn parse_identifier(pairs: Pairs<Rule>) -> &str {
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::identifier => {
+                return pair.as_str();
+            }
+            _ => continue,
+        }
+    }
+    unreachable!()
+}
+
+fn parse_identifiers(pairs: Pairs<Rule>) -> Vec<&str> {
     let mut ret = vec![];
 
     for pair in pairs {
@@ -97,7 +109,7 @@ fn parse_identifiers(pairs: Pairs<Rule>) -> Result<Vec<&str>> {
         }
     }
 
-    Ok(ret)
+    ret
 }
 
 fn parse_db_statement(system: &mut System, statement: Pairs<Rule>) -> Result<(Table, QueryStat)> {
@@ -203,7 +215,7 @@ fn parse_table_statement(
         Rule::delete_statement => parse_delete_statement(system, pair.into_inner()),
         Rule::update_statement => parse_update_statement(system, pair.into_inner()),
         Rule::select_statement => parse_select_statement(system, pair.into_inner()),
-        _ => unimplemented!(),
+        _ => unreachable!(),
     }
 }
 
@@ -744,7 +756,7 @@ fn parse_select_statement(
                 selectors = Some(parse_selectors(pair)?);
             }
             Rule::identifiers => {
-                tables = Some(parse_identifiers(pair.into_inner())?);
+                tables = Some(parse_identifiers(pair.into_inner()));
             }
             Rule::where_and_clause => {
                 where_clauses = parse_where_and_clause(pair.into_inner())?;
@@ -985,7 +997,9 @@ fn parse_alter_statement(
     match pair.as_rule() {
         Rule::alter_add_index => parse_add_index_statement(system, pair.into_inner()),
         Rule::alter_drop_index => parse_drop_index_statement(system, pair.into_inner()),
-        _ => unimplemented!(),
+        Rule::alter_add_primary_key => parse_add_primary_key_statement(system, pair.into_inner()),
+        Rule::alter_drop_primary_key => parse_drop_primary_key_statement(system, pair.into_inner()),
+        _ => todo!(),
     }
 }
 
@@ -1006,7 +1020,7 @@ fn parse_add_index_statement(
                 index_name = Some(pair.as_str());
             }
             Rule::identifiers => {
-                columns = Some(parse_identifiers(pair.into_inner())?);
+                columns = Some(parse_identifiers(pair.into_inner()));
             }
             _ => continue,
         }
@@ -1015,7 +1029,7 @@ fn parse_add_index_statement(
     let table = table.unwrap();
     let columns = columns.unwrap();
 
-    system.add_index(true, None, table, index_name, &columns)?;
+    system.add_index(true, None, table, index_name, &columns, false)?;
 
     Ok((fresh_table(), QueryStat::Update(0)))
 }
@@ -1043,6 +1057,63 @@ fn parse_drop_index_statement(
     let index_name = index_name.unwrap();
 
     system.drop_index(table, index_name)?;
+
+    Ok((fresh_table(), QueryStat::Update(0)))
+}
+
+fn parse_add_primary_key_statement(
+    system: &mut System,
+    pairs: Pairs<Rule>,
+) -> Result<(Table, QueryStat)> {
+    let mut table = None;
+    let mut constraint = None;
+    let mut columns = None;
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::identifier => {
+                table = Some(pair.as_str());
+            }
+            Rule::constraint_clause => {
+                constraint = Some(parse_identifier(pair.into_inner()));
+            }
+            Rule::identifiers => {
+                columns = Some(parse_identifiers(pair.into_inner()));
+            }
+            _ => continue,
+        }
+    }
+
+    let table = table.unwrap();
+    let columns = columns.unwrap();
+
+    system.add_primary_key(table, constraint, &columns)?;
+
+    Ok((fresh_table(), QueryStat::Update(0)))
+}
+
+fn parse_drop_primary_key_statement(
+    system: &mut System,
+    pairs: Pairs<Rule>,
+) -> Result<(Table, QueryStat)> {
+    let mut table = None;
+    let mut constraint = None;
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::identifier => {
+                table = Some(pair.as_str());
+            }
+            Rule::index_identifier => {
+                constraint = Some(parse_identifier(pair.into_inner()));
+            }
+            _ => continue,
+        }
+    }
+
+    let table = table.unwrap();
+
+    system.drop_primary_key(table, constraint)?;
 
     Ok((fresh_table(), QueryStat::Update(0)))
 }

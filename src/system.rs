@@ -324,7 +324,14 @@ impl System {
                     log::info!("Creating index for primary key {name:?}");
                     let name = name.as_deref();
                     let columns: Vec<_> = columns.iter().map(|c| c.as_str()).collect();
-                    self.add_index(false, Some("pk"), table_name, name, columns.as_slice())?;
+                    self.add_index(
+                        false,
+                        Some("pk"),
+                        table_name,
+                        name,
+                        columns.as_slice(),
+                        true,
+                    )?;
                 }
                 Constraint::ForeignKey {
                     name,
@@ -335,7 +342,14 @@ impl System {
                     log::info!("Creating index for foreign key {name:?}");
                     let name = name.as_deref();
                     let columns: Vec<_> = columns.iter().map(|c| c.as_str()).collect();
-                    self.add_index(false, Some("fk_to"), table_name, name, columns.as_slice())?;
+                    self.add_index(
+                        false,
+                        Some("fk_to"),
+                        table_name,
+                        name,
+                        columns.as_slice(),
+                        true,
+                    )?;
 
                     log::info!("Creating index for foreign key referenced table {ref_table:?}");
                     let ref_columns: Vec<_> = ref_columns.iter().map(|c| c.as_str()).collect();
@@ -345,6 +359,7 @@ impl System {
                         &ref_table,
                         None,
                         ref_columns.as_slice(),
+                        true,
                     )?;
                 }
             }
@@ -1107,6 +1122,10 @@ impl System {
     }
 
     /// Execute add index statement.
+    ///
+    /// # Parameters
+    ///
+    /// - `init`: whether to initialize the index.
     pub fn add_index(
         &mut self,
         explicit: bool,
@@ -1114,6 +1133,7 @@ impl System {
         table_name: &str,
         index_name: Option<&str>,
         columns: &[&str],
+        init: bool,
     ) -> Result<()> {
         log::info!("Executing add index statement");
 
@@ -1158,7 +1178,9 @@ impl System {
         table.add_index(schema);
 
         self.open_index(table_name, &index_name)?;
-        self.init_index(table_name, &index_name, columns)?;
+        if init {
+            self.init_index(table_name, &index_name, columns)?;
+        }
 
         Ok(())
     }
@@ -1198,6 +1220,120 @@ impl System {
         self.open_table(table_name)?;
         let table = self.get_table_mut(table_name)?;
         table.remove_index(index_name);
+
+        Ok(())
+    }
+
+    /// Execute add primary key statement.
+    pub fn add_primary_key(
+        &mut self,
+        table_name: &str,
+        constraint_name: Option<&str>,
+        columns: &[&str],
+    ) -> Result<()> {
+        log::info!("Executing add primary key statement");
+
+        self.open_table(table_name)?;
+        let table = self.get_table(table_name)?;
+
+        let schema = table.get_schema();
+        for &column in columns {
+            if !schema.has_column(column) {
+                return Err(Error::ColumnNotFound(column.to_owned()));
+            }
+        }
+
+        for constraint in schema.get_constraints() {
+            if let Constraint::PrimaryKey { .. } = constraint {
+                Err(Error::MultiplePrimaryKeys(table_name.to_owned()))?;
+            }
+        }
+
+        let constraint = Constraint::PrimaryKey {
+            name: constraint_name.map(|s| s.to_owned()),
+            columns: columns.iter().map(|&s| s.to_owned()).collect(),
+        };
+
+        log::info!("Creating index for primary key {constraint_name:?}");
+        self.add_index(
+            false,
+            Some("pk"),
+            table_name,
+            constraint_name,
+            columns,
+            false,
+        )?;
+
+        // Initialize the index, while checking for duplicate primary key.
+        let index_name = constraint.get_index_name(false);
+        let index = self.get_index(table_name, &index_name)?;
+        let selector = index.get_selector();
+
+        let mut fs = FS.lock()?;
+
+        let table = self.get_table(table_name)?;
+        let pages = table.get_schema().get_pages();
+        for i in 0..pages {
+            log::info!("Adding index for page {i}");
+            let table = self.get_table(table_name)?;
+            let keys = table.select_page(&mut fs, i, &selector, &[])?;
+
+            let mut failed = false;
+            let index = self.get_index_mut(table_name, &index_name)?;
+            for (key, slot) in keys {
+                log::info!("Checking primary key {key:?}");
+                if index.contains(&mut fs, &key)? {
+                    failed = true;
+                    break;
+                } else {
+                    index.insert(&mut fs, key, i, slot)?;
+                }
+            }
+
+            if failed {
+                drop(fs);
+                self.drop_index(table_name, &index_name)?;
+                return Err(Error::DuplicatePrimaryKey(
+                    constraint_name.unwrap_or("<anonymous>").to_string(),
+                ));
+            }
+        }
+
+        let table = self.get_table_mut(table_name)?;
+        table.add_constraint(constraint);
+
+        Ok(())
+    }
+
+    /// Execute drop primary key statement.
+    pub fn drop_primary_key(&mut self, table_name: &str, constraint_name: Option<&str>) -> Result<()> {
+        log::info!("Executing drop primary key statement");
+
+        self.open_table(table_name)?;
+        let table = self.get_table(table_name)?;
+
+        let schema = table.get_schema();
+        let pk = schema.get_primary_key();
+        if pk.is_none() {
+            return Err(Error::NoPrimaryKey(table_name.to_owned()));
+        }
+        let constraint = pk.unwrap();
+        if let Constraint::PrimaryKey { name, .. } = constraint {
+            if let (Some(name), Some(constraint_name)) = (name.as_deref(), constraint_name) {
+                if name != constraint_name {
+                    return Err(Error::NoPrimaryKey(table_name.to_owned()));
+                }
+            }
+        } else {
+            unreachable!();
+        }
+
+        let index_name = constraint.get_index_name(false);
+
+        self.drop_index(table_name, &index_name)?;
+
+        let table = self.get_table_mut(table_name)?;
+        table.remove_primary_key();
 
         Ok(())
     }

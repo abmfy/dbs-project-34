@@ -465,8 +465,6 @@ pub struct TableSchema {
     path: PathBuf,
     /// Columns of the table.
     columns: Vec<Column>,
-    /// Constraints on the table.
-    constraints: Vec<Constraint>,
     /// Offsets of columns in a record.
     offsets: Vec<usize>,
     /// The size of the null bitmap.
@@ -518,7 +516,6 @@ impl TableSchema {
             schema,
             path: path.to_owned(),
             columns,
-            constraints,
             offsets,
             null_bitmap_size,
             record_size,
@@ -548,7 +545,7 @@ impl TableSchema {
 
     /// Return a reference to table constraints.
     pub fn get_constraints(&self) -> &[Constraint] {
-        &self.constraints
+        &self.schema.constraints
     }
 
     /// Return a reference to table indexes.
@@ -571,6 +568,38 @@ impl TableSchema {
         log::info!("Dropping index {name}");
         log::info!("Current indexes: {:?}", self.schema.indexes);
         self.schema.indexes.retain(|i| i.name != name);
+    }
+
+    /// Get the primary key in the table.
+    pub fn get_primary_key(&self) -> Option<&Constraint> {
+        self.schema.constraints.iter().find_map(|c| match c {
+            Constraint::PrimaryKey { .. } => Some(c),
+            _ => None,
+        })
+    }
+
+    /// Add an constraint to the table.
+    pub fn add_constraint(&mut self, constraint: Constraint) {
+        self.schema.constraints.push(constraint);
+    }
+
+    /// Remove the primary key on the table.
+    pub fn remove_primary_key(&mut self) {
+        log::info!("Dropping primary key");
+        self.schema.constraints.retain(|c| match c {
+            Constraint::PrimaryKey { .. } => false,
+            _ => true,
+        })
+    }
+
+    /// Remove an constraint from the table.
+    pub fn remove_constraint(&mut self, name: &str) {
+        log::info!("Dropping constraint {name}");
+        log::info!("Current constraints: {:?}", self.schema.constraints);
+        self.schema.constraints.retain(|c| match c {
+            Constraint::PrimaryKey { name: n, .. } => n.as_deref() != Some(name),
+            Constraint::ForeignKey { name: n, .. } => n.as_deref() != Some(name),
+        });
     }
 
     /// Get a column by its name.

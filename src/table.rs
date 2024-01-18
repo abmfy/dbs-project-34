@@ -17,7 +17,7 @@ use crate::error::Result;
 use crate::file::PageCache;
 use crate::index::IndexSchema;
 use crate::record::Record;
-use crate::schema::{Selectors, SetPair, TableSchema, WhereClause};
+use crate::schema::{Selectors, SetPair, TableSchema, WhereClause, Constraint};
 
 /// Select result containing slot id.
 pub type SelectResult = (Record, usize);
@@ -451,6 +451,18 @@ impl Table {
     pub fn remove_index(&mut self, name: &str) {
         self.schema.remove_index(name);
     }
+
+    /// Save an constraint schema into the table.
+    pub fn add_constraint(&mut self, schema: Constraint) {
+        log::info!("Adding constraint {schema:?}");
+        self.schema.add_constraint(schema);
+    }
+
+    /// Remove primary key on the table.
+    pub fn remove_primary_key(&mut self) {
+        self.schema.remove_primary_key();
+    }
+    
 }
 
 /// Common behaviors between TablePage and TablePageMut.

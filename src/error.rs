@@ -44,6 +44,8 @@ pub enum Error {
     DuplicateIndex(Vec<String>),
     #[error("Multiple primary keys on table `{0}`")]
     MultiplePrimaryKeys(String),
+    #[error("No primary key on table `{0}`")]
+    NoPrimaryKey(String),
 
     #[error("Field count mismatch: {0} provided but {1} expected")]
     FieldCountMismatch(usize, usize),
