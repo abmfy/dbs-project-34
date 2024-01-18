@@ -248,6 +248,7 @@ impl Index {
         let buf = fs.get(self.fd, child_id)?;
         let page = IndexPage::from_buf(self, buf);
         let key = page.get_record(page.get_size() - 1);
+
         log::debug!("Looking up for key {key:?}");
 
         let buf = fs.get(self.fd, parent_id)?;
@@ -464,6 +465,12 @@ impl Index {
 
                     page.set_next(Some(new_page_id));
 
+                    if let Some(curr_next_page_id) = curr_next {
+                        let buf = fs.get_mut(self.fd, curr_next_page_id)?;
+                        let mut curr_next_page = IndexPageMut::from_buf(self, buf);
+                        curr_next_page.set_prev(Some(new_page_id));
+                    }
+
                     self.split(fs, page_id, new_page_id)?;
 
                     // Create a new root
@@ -504,6 +511,12 @@ impl Index {
                     let mut page = IndexPageMut::from_buf(self, buf);
 
                     page.set_next(Some(new_page_id));
+
+                    if let Some(curr_next_page_id) = curr_next {
+                        let buf = fs.get_mut(self.fd, curr_next_page_id)?;
+                        let mut curr_next_page = IndexPageMut::from_buf(self, buf);
+                        curr_next_page.set_prev(Some(new_page_id));
+                    }
 
                     self.split(fs, page_id, new_page_id)?;
 
@@ -561,13 +574,13 @@ impl Index {
         let mut iter = self.index(fs, &key)?.expect("Removing from empty index");
         loop {
             let (curr_key, curr_page, curr_slot) = self.get_record(fs, iter)?;
-            log::info!("Current index record: ({curr_key:?}, {curr_page}, {curr_slot})");
+            log::debug!("Current index record: ({curr_key:?}, {curr_page}, {curr_slot})");
             assert_eq!(curr_key, key, "Removing non-existing key");
             if curr_page == page && curr_slot == slot {
                 let (page_id, slot) = iter;
                 let buf = fs.get_mut(self.fd, page_id)?;
                 let mut page = IndexPageMut::from_buf(self, buf);
-                log::info!("Size of {page_id} is {} before removal", page.get_size());
+                log::debug!("Size of {page_id} is {} before removal", page.get_size());
                 page.remove(slot);
                 self.resolve(fs, page_id)?;
                 return Ok(());
@@ -580,10 +593,10 @@ impl Index {
     fn update_key(&mut self, fs: &mut PageCache, page_id: usize) -> Result<()> {
         let mut curr_page_id = page_id;
         loop {
-            let buf = fs.get_mut(self.fd, curr_page_id)?;
+            let buf = fs.get(self.fd, curr_page_id)?;
             let page = IndexPage::from_buf(self, buf);
             if page.get_size() == 0 {
-                log::info!("Page {page_id} is empty");
+                log::debug!("Page {page_id} is empty");
                 break;
             }
             let max_key = page.get_record(page.get_size() - 1).into_keys();
@@ -594,7 +607,9 @@ impl Index {
 
                 let parent_buf = fs.get_mut(self.fd, parent_page_id)?;
                 let mut parent_page = IndexPageMut::from_buf(self, parent_buf);
-                parent_page.set_record(pos, Record::new_with_child(max_key, curr_page_id));
+                let record = Record::new_with_child(max_key, curr_page_id);
+                log::debug!("Setting max key of {parent_page_id} (parent of {curr_page_id}) to {:?}, slot {pos}", &record);
+                parent_page.set_record(pos, record);
 
                 curr_page_id = parent_page_id;
             } else {
@@ -619,7 +634,7 @@ impl Index {
 
     /// Resolve underflow.
     fn resolve(&mut self, fs: &mut PageCache, mut page_id: usize) -> Result<()> {
-        log::info!("Resolving underflow in page {page_id}");
+        log::debug!("Resolving underflow in page {page_id}");
 
         let buf = fs.get(self.fd, page_id)?;
         let page = IndexPage::from_buf(self, buf);
@@ -627,20 +642,20 @@ impl Index {
         let mut next_id = page.get_next();
         let mut parent_id = page.get_parent();
         let mut is_underflow = page.is_underflow();
-        log::info!("Size of page {page_id} is {}", page.get_size());
+        log::debug!("Size of page {page_id} is {}", page.get_size());
         while is_underflow {
             if self.borrow(fs, prev_id, Some(page_id))? {
-                log::info!("Borrowing from the left sibling");
+                log::debug!("Borrowing from the left sibling");
                 self.update_key(fs, prev_id.unwrap())?;
                 self.update_key(fs, page_id)?;
                 break;
             } else if self.borrow(fs, Some(page_id), next_id)? {
-                log::info!("Borrowing from the right sibling");
+                log::debug!("Borrowing from the right sibling");
                 self.update_key(fs, page_id)?;
                 self.update_key(fs, next_id.unwrap())?;
                 break;
             } else if self.merge(fs, prev_id, Some(page_id), true)? {
-                log::info!("Merging into the left sibling");
+                log::debug!("Merging into the left sibling");
                 self.update_key(fs, prev_id.unwrap())?;
 
                 // Free merged page
@@ -655,7 +670,7 @@ impl Index {
                 parent_id = page.get_parent();
                 is_underflow = page.is_underflow();
             } else if self.merge(fs, Some(page_id), next_id, false)? {
-                log::info!("Merging into the right sibling");
+                log::debug!("Merging into the right sibling");
                 self.update_key(fs, next_id.unwrap())?;
 
                 // Free merged page
@@ -674,7 +689,7 @@ impl Index {
             }
         }
 
-        log::info!("Underflow resolved");
+        log::debug!("Underflow resolved");
         self.update_key(fs, page_id)?;
 
         let root_id = self
@@ -744,19 +759,20 @@ impl Index {
             return Ok(false);
         }
 
-        log::info!("Borrowing nodes between {left_id} and {right_id}");
+        log::debug!("Borrowing nodes between {left_id} and {right_id}");
 
         let left_new_size = total_size / 2;
         let right_new_size = total_size - left_new_size;
 
         if left_size > left_new_size {
-            log::info!(
+            log::debug!(
                 "Moving {} records from {left_id} to {right_id}",
                 left_size - left_new_size
             );
 
             let left_buf = fs.get_mut(self.fd, left_id)?;
             let mut left_page = IndexPageMut::from_buf(self, left_buf);
+
             let records = left_page.remove_range(left_new_size..left_size);
 
             let children: Option<Vec<_>> = if !left_page.is_leaf() {
@@ -780,7 +796,7 @@ impl Index {
         }
 
         if right_size > right_new_size {
-            log::info!(
+            log::debug!(
                 "Moving {} records from {right_id} to {left_id}",
                 right_size - right_new_size
             );
@@ -842,17 +858,17 @@ impl Index {
 
         let total_size = left_size + right_size;
 
-        log::info!("Left size is {left_size}, right size is {right_size}");
+        log::debug!("Left size is {left_size}, right size is {right_size}");
 
         // Can't merge if total size is greater than max size
         if total_size > max_records {
             return Ok(false);
         }
 
-        log::info!("Merging nodes between {left_id} and {right_id}");
+        log::debug!("Merging nodes between {left_id} and {right_id}");
 
         if into_left {
-            log::info!("Merging {right_id} into {left_id}");
+            log::debug!("Merging {right_id} into {left_id}");
 
             let right_buf = fs.get(self.fd, right_id)?;
             let right_page = IndexPage::from_buf(self, right_buf);
@@ -886,7 +902,7 @@ impl Index {
                 }
             }
         } else {
-            log::info!("Merging {left_id} into {right_id}");
+            log::debug!("Merging {left_id} into {right_id}");
 
             let left_buf = fs.get(self.fd, left_id)?;
             let left_page = IndexPage::from_buf(self, left_buf);
@@ -1228,7 +1244,7 @@ impl<'a> IndexPageMut<'a> {
     fn shift(&mut self, slot: usize) {
         let begin = HEADER_SIZE + slot * self.record_size;
         let end = HEADER_SIZE + self.get_size() * self.record_size;
-        let end = end.min(PAGE_SIZE - self.record_size);
+        // let end = end.min(PAGE_SIZE - self.record_size);
         self.buf.copy_within(begin..end, begin + self.record_size)
     }
 
@@ -1244,8 +1260,8 @@ impl<'a> IndexPageMut<'a> {
     fn insert_range(&mut self, slot: usize, records: Vec<Record>) {
         assert!(self.get_size() + records.len() <= self.get_max_records() + 1);
         let begin = HEADER_SIZE + slot * self.record_size;
-        let end = HEADER_SIZE + (slot + records.len()) * self.record_size;
-        let end = end.min(PAGE_SIZE - records.len() * self.record_size);
+        let end = HEADER_SIZE + self.get_size() * self.record_size;
+        log::debug!("Current size: {}", self.get_size());
         log::debug!("Shifting range {begin}..{end}");
         log::debug!(
             "is_leaf: {}, end: {}",
