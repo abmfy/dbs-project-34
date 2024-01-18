@@ -164,6 +164,30 @@ pub enum Constraint {
     },
 }
 
+impl Constraint {
+    /// Get the index name of this constraint.
+    ///
+    /// # Parameters
+    ///
+    /// - `referrer`: whether the index is on the referrer side.
+    pub fn get_index_name(&self, referrer: bool) -> String {
+        match self {
+            Self::PrimaryKey { name, columns } => {
+                String::from("pk.")
+                    + &format!(
+                        "{}.implicit",
+                        if let Some(name) = name {
+                            name.to_owned()
+                        } else {
+                            format!("annoy.{}", columns.join("_"))
+                        }
+                    )
+            }
+            _ => todo!(),
+        }
+    }
+}
+
 impl Display for Constraint {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {

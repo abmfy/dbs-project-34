@@ -39,7 +39,7 @@ use crate::config::{LINK_SIZE, PAGE_SIZE};
 use crate::error::Result;
 use crate::file::PageCache;
 use crate::record::{Record, RecordSchema};
-use crate::schema::{Column, TableSchema, Type};
+use crate::schema::{Column, ColumnSelector, Selector, Selectors, TableSchema, Type};
 
 const LEAF_OFFSET: usize = 0;
 const SIZE_OFFSET: usize = LINK_SIZE;
@@ -212,6 +212,17 @@ impl Index {
         &self.columns
     }
 
+    /// Get a selector for the key columns.
+    pub fn get_selector(&self) -> Selectors {
+        let columns = self
+            .columns
+            .iter()
+            .cloned()
+            .map(|c| Selector::Column(ColumnSelector(None, c.name)))
+            .collect();
+        Selectors::Some(columns)
+    }
+
     /// Allocate an empty page for use.
     pub fn new_page(&mut self, fs: &mut PageCache) -> Result<usize> {
         let free_page_id = self.schema.free;
@@ -357,6 +368,19 @@ impl Index {
         log::debug!("Found at {page_id} {pos}");
 
         Ok(Some((page_id, pos)))
+    }
+
+    /// Check if some key exists in the index.
+    pub fn contains(&self, fs: &mut PageCache, key: &Record) -> Result<bool> {
+        log::debug!("Checking if {key:?} exists");
+
+        let iter = self.index(fs, key)?;
+        if let Some(iter) = iter {
+            let (record, _, _) = self.get_record(fs, iter)?;
+            Ok(key == &record)
+        } else {
+            Ok(false)
+        }
     }
 
     /// Get the index record using a iterator.

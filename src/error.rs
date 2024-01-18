@@ -52,6 +52,9 @@ pub enum Error {
     #[error("Field `{0}` must not be nullable")]
     NotNullable(String),
 
+    #[error("Constraint failed: duplicate values `{0}`")]
+    DuplicatePrimaryKey(String),
+
     #[error("There should be exactly one join condition")]
     JoinConditionCount,
     #[error("Only equal join is supported")]

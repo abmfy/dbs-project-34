@@ -737,6 +737,9 @@ impl System {
         let table_name = table;
 
         self.open_table(table)?;
+        // Open all indexes of this table.
+        let indexes = self.open_indexes(table_name)?;
+
         let table = self.get_table(table)?;
 
         let schema = table.get_schema();
@@ -744,12 +747,39 @@ impl System {
             record.check(schema)?;
         }
 
-        // Open all indexes of this table.
-        let indexes = self.open_indexes(table_name)?;
-
         let mut fs = FS.lock()?;
 
         for record in records {
+            let table = self.get_table(table_name)?;
+            let schema = table.get_schema();
+
+            // Check primary key.
+            for constraint in schema.get_constraints() {
+                match constraint {
+                    Constraint::PrimaryKey { name, .. } => {
+                        let index_name = constraint.get_index_name(false);
+
+                        let index = self.get_index(table_name, &index_name)?;
+                        let table = self.get_table(table_name)?;
+
+                        let selector = index.get_selector();
+                        let key = record.select(&selector, table.get_schema());
+
+                        if index.contains(&mut fs, &key)? {
+                            Err(Error::DuplicatePrimaryKey(
+                                name.clone().unwrap_or("<anonymous>".to_string()),
+                            ))?;
+                        }
+                    }
+                    Constraint::ForeignKey {
+                        name,
+                        columns,
+                        ref_table,
+                        ref_columns,
+                    } => todo!(),
+                }
+            }
+
             let table = self.get_table_mut(table_name)?;
             let (page_id, slot) = table.insert(&mut fs, record.clone())?;
 
