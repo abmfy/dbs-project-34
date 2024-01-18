@@ -192,7 +192,7 @@ impl Table {
         selector: &Selectors,
         where_clauses: &[WhereClause],
     ) -> Result<Option<Record>> {
-        log::info!("Fetching indexed record {page_id}, {slot}");
+        log::debug!("Fetching indexed record {page_id}, {slot}");
 
         let page_buf = fs.get(self.fd, page_id)?;
         let page = TablePage::new(self, page_buf);
@@ -215,6 +215,7 @@ impl Table {
         fs: &mut PageCache,
         page_id: usize,
         selector: &Selectors,
+        where_clauses: &[WhereClause],
     ) -> Result<Vec<SelectResult>> {
         let page_buf = fs.get(self.fd, page_id)?;
         let page = TablePage::new(self, page_buf);
@@ -222,7 +223,12 @@ impl Table {
         let mut ret = Vec::new();
 
         for (record, slot, _) in &page {
-            ret.push((record.select(selector, &self.schema), slot));
+            if where_clauses
+                .iter()
+                .all(|clause| clause.matches(&record, &self.schema))
+            {
+                ret.push((record.select(selector, &self.schema), slot));
+            }
         }
 
         Ok(ret)

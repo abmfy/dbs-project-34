@@ -772,7 +772,7 @@ fn parse_select_statement(
 
     ret.set_titles(Row::from(columns));
 
-    let results = system.select(&selectors, &tables, &where_clauses)?;
+    let results = system.select(&selectors, &tables, where_clauses)?;
     let len = results.len();
 
     for record in results {

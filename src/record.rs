@@ -268,6 +268,46 @@ impl Record {
         }
     }
 
+    /// Select fields from records in multiple tables.
+    pub fn select_tables<S: RecordSchema>(
+        records: &[&Self],
+        selectors: &Selectors,
+        schemas: &[&S],
+        tables: &[&str],
+    ) -> Result<Self> {
+        match selectors {
+            Selectors::All => {
+                let fields = records
+                    .iter()
+                    .map(|&record| record.clone().into_keys())
+                    .fold(vec![], |mut acc, x| {
+                        acc.extend(x);
+                        acc
+                    });
+                Ok(Self::new(fields))
+            }
+            Selectors::Some(selectors) => {
+                let mut fields = vec![];
+                for selector in selectors {
+                    match selector {
+                        Selector::Column(ColumnSelector(table, column)) => {
+                            let table = table
+                                .clone()
+                                .ok_or(Error::InexactColumn(column.to_owned()))?;
+                            let table_index = tables
+                                .iter()
+                                .position(|&t| t == table)
+                                .ok_or(Error::TableNotFound(table))?;
+                            let column_index = schemas[table_index].get_column_index(column);
+                            fields.push(records[table_index].fields[column_index].clone());
+                        }
+                    }
+                }
+                Ok(Self::new(fields))
+            }
+        }
+    }
+
     /// Update some fields in the record.
     ///
     /// # Returns

@@ -17,6 +17,9 @@ use crate::schema::{Type, Value};
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error("{0} not implemented")]
+    NotImplemented(&'static str),
+
     #[error("Database `{0}` already exists")]
     DatabaseExists(String),
     #[error("Database `{0}` not found")]
@@ -30,6 +33,8 @@ pub enum Error {
     TableNotFound(String),
     #[error("Column `{0}` not found")]
     ColumnNotFound(String),
+    #[error("Inexact column name `{0}`")]
+    InexactColumn(String),
     #[error("Index `{0}` not found")]
     IndexNotFound(String),
 
@@ -46,6 +51,11 @@ pub enum Error {
     TypeMismatch(Value, Type),
     #[error("Field `{0}` must not be nullable")]
     NotNullable(String),
+
+    #[error("There should be exactly one join condition")]
+    JoinConditionCount,
+    #[error("Only equal join is supported")]
+    JoinOperation,
 
     #[error("CSV error: {0}")]
     Csv(#[from] CsvError),

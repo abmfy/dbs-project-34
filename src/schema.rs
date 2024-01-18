@@ -228,14 +228,66 @@ impl Selectors {
             }
         }
     }
+
+    /// Check the selectors against some tables.
+    ///
+    /// # Error
+    ///
+    /// Unlike `check`, this function requires all selectors be explicit about tables.
+    /// If a selector is not explicit about a table, an error will be returned.
+    pub fn check_tables(&self, schemas: &[&TableSchema], tables: &[&str]) -> Result<()> {
+        match self {
+            Selectors::All => Ok(()),
+            Selectors::Some(selectors) => {
+                for selector in selectors {
+                    match selector {
+                        Selector::Column(column_selector) => {
+                            column_selector.check_tables(schemas, tables)?;
+                        }
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 /// Column selector in the form table.column,
 /// where table part is optional
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ColumnSelector(pub Option<String>, pub String);
 
+impl ColumnSelector {
+    /// Check the column selector against some table schemas.
+    ///
+    /// # Error
+    ///
+    /// Return error when the column selector is not explicit about a table.
+    pub fn check_tables(&self, schemas: &[&TableSchema], tables: &[&str]) -> Result<()> {
+        let ColumnSelector(table_selector, column) = self;
+        if let Some(table_selector) = table_selector {
+            let mut found = false;
+            for (&schema, &table) in schemas.iter().zip(tables) {
+                if table == table_selector {
+                    found = true;
+                    if !schema.has_column(column) {
+                        return Err(Error::ColumnNotFound(column.clone()));
+                    }
+                    break;
+                }
+            }
+            if !found {
+                return Err(Error::TableNotFound(table_selector.clone()));
+            }
+        } else {
+            return Err(Error::InexactColumn(column.clone()));
+        }
+        Ok(())
+    }
+}
+
 /// Query selector.
+#[derive(Clone, Debug)]
 pub enum Selector {
     Column(ColumnSelector),
 }
@@ -275,7 +327,7 @@ impl SetPair {
 }
 
 /// SQL operator.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Operator {
     Eq,
     Ne,
@@ -286,14 +338,14 @@ pub enum Operator {
 }
 
 /// SQL expression.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Expression {
     Value(Value),
     Column(ColumnSelector),
 }
 
 /// Where clause.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum WhereClause {
     OperatorExpression(ColumnSelector, Operator, Expression),
 }
@@ -313,6 +365,25 @@ impl WhereClause {
                             return Err(Error::ColumnNotFound(column.clone()));
                         }
                         Ok(())
+                    }
+                }
+            }
+        }
+    }
+
+    /// Check the where clause against some tables.
+    ///
+    /// # Error
+    ///
+    /// Unlike `check`, this function requires all selectors be explicit about tables.
+    pub fn check_tables(&self, schemas: &[&TableSchema], tables: &[&str]) -> Result<()> {
+        match self {
+            WhereClause::OperatorExpression(column_selector, _, expr) => {
+                column_selector.check_tables(schemas, tables)?;
+                match expr {
+                    Expression::Value(_) => Ok(()),
+                    Expression::Column(column_selector) => {
+                        column_selector.check_tables(schemas, tables)
                     }
                 }
             }

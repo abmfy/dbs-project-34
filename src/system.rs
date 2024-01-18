@@ -192,6 +192,29 @@ impl System {
             .ok_or(Error::TableNotFound(name.to_owned()))
     }
 
+    /// Open all indexes on a table.
+    ///
+    /// # Returns
+    ///
+    /// Returns the name of indexes on the table.
+    ///
+    /// # Warning
+    ///
+    /// Please open the table before opening its indexes.
+    fn open_indexes(&mut self, table_name: &str) -> Result<Vec<String>> {
+        let table = self.get_table(table_name)?;
+        let indexes: Vec<_> = table
+            .get_schema()
+            .get_indexes()
+            .iter()
+            .map(|index| index.name.clone())
+            .collect();
+        for index in &indexes {
+            self.open_index(table_name, index)?;
+        }
+        Ok(indexes)
+    }
+
     /// Open a index, hold its file descriptor and schema.
     fn open_index(&mut self, table_name: &str, name: &str) -> Result<()> {
         if self
@@ -369,17 +392,7 @@ impl System {
         log::info!("Loading data into table {}", name);
 
         self.open_table(name)?;
-        let table = self.get_table(name)?;
-        // Open all indexes of this table.
-        let indexes: Vec<_> = table
-            .get_schema()
-            .get_indexes()
-            .iter()
-            .map(|index| index.name.clone())
-            .collect();
-        for index in &indexes {
-            self.open_index(name, index)?;
-        }
+        let indexes = self.open_indexes(name)?;
 
         let mut count = 0;
         let mut reader = ReaderBuilder::new().has_headers(false).from_path(file)?;
@@ -422,38 +435,37 @@ impl System {
         &mut self,
         selectors: &Selectors,
         tables: &[&str],
-        where_clauses: &[WhereClause],
+        where_clauses: Vec<WhereClause>,
     ) -> Result<Vec<Record>> {
         log::info!("Executing select statement");
 
-        assert_eq!(tables.len(), 1, "Joining is not supported yet");
+        match tables.len() {
+            0 => unreachable!(),
+            1 => (),
+            2 => return self.join_select(selectors, tables, where_clauses),
+            _ => return Err(Error::NotImplemented("Join on multiple tables")),
+        }
+
+        assert_eq!(tables.len(), 1);
 
         let table_name = tables[0];
         self.open_table(tables[0])?;
         let table = self.get_table(tables[0])?;
 
         selectors.check(table.get_schema())?;
-        for where_clause in where_clauses {
+        for where_clause in &where_clauses {
             where_clause.check(table.get_schema())?
         }
 
         // Open all indexes of this table.
-        let indexes: Vec<_> = table
-            .get_schema()
-            .get_indexes()
-            .iter()
-            .map(|index| index.name.clone())
-            .collect();
-        for index in indexes {
-            self.open_index(table_name, &index)?;
-        }
+        self.open_indexes(table_name)?;
 
         let table = self.get_table(table_name)?;
 
         let mut fs = FS.lock()?;
 
         // Check index availability
-        let index = self.match_index(&mut fs, tables[0], where_clauses)?;
+        let index = self.match_index(&mut fs, tables[0], where_clauses.as_slice())?;
         if let Some((index_name, left_iter, right_key)) = index {
             log::info!("Using index {index_name}");
 
@@ -470,9 +482,13 @@ impl System {
                     return Ok(ret);
                 }
                 let table = self.get_table(table_name)?;
-                if let Some(record) =
-                    table.select_page_slot(&mut fs, page, slot, selectors, where_clauses)?
-                {
+                if let Some(record) = table.select_page_slot(
+                    &mut fs,
+                    page,
+                    slot,
+                    selectors,
+                    where_clauses.as_slice(),
+                )? {
                     ret.push(record);
                 }
                 if let Some(new_iter) = index.inc_iter(&mut fs, iter)? {
@@ -482,9 +498,236 @@ impl System {
                 }
             }
         } else {
-            let ret = table.select(&mut fs, selectors, where_clauses)?;
+            let ret = table.select(&mut fs, selectors, where_clauses.as_slice())?;
             Ok(ret)
         }
+    }
+
+    fn join_select(
+        &mut self,
+        selectors: &Selectors,
+        tables: &[&str],
+        where_clauses: Vec<WhereClause>,
+    ) -> Result<Vec<Record>> {
+        log::info!("Executing join select statement");
+
+        assert_eq!(tables.len(), 2);
+
+        let (mut table0_name, mut table1_name) = (tables[0], tables[1]);
+
+        self.open_table(table0_name)?;
+        self.open_table(table1_name)?;
+        let indexes0 = self.open_indexes(table0_name)?;
+        let indexes1 = self.open_indexes(table1_name)?;
+
+        // Check selectors and where clauses
+        let table0 = self.get_table(table0_name)?;
+        let table1 = self.get_table(table1_name)?;
+        let schemas = [table0.get_schema(), table1.get_schema()];
+        let tables = [table0_name, table1_name];
+        selectors.check_tables(&schemas, &tables)?;
+        for where_clause in &where_clauses {
+            where_clause.check_tables(&schemas, &tables)?;
+        }
+
+        // Find out equal join condition
+        let mut cond = None;
+        let mut real_where_clauses = vec![];
+        for where_clause in &where_clauses {
+            if let WhereClause::OperatorExpression(
+                ColumnSelector(Some(table0), column0),
+                operator,
+                Expression::Column(ColumnSelector(Some(table1), column1)),
+            ) = where_clause
+            {
+                // Not a join condition
+                if table0 == table1 {
+                    real_where_clauses.push(where_clause.clone());
+                    continue;
+                }
+
+                if !matches!(operator, Operator::Eq) {
+                    Err(Error::JoinOperation)?;
+                }
+
+                if cond.is_some() {
+                    Err(Error::JoinConditionCount)?;
+                }
+
+                cond = Some(if table0 == table0_name {
+                    (column0, column1)
+                } else {
+                    (column1, column0)
+                })
+            } else {
+                // Not a join condition
+                real_where_clauses.push(where_clause.clone());
+            }
+        }
+        if cond.is_none() {
+            return Err(Error::JoinConditionCount);
+        }
+        let mut cond = cond.unwrap();
+        log::info!(
+            "Join condition is {table0_name}.{} = {table1_name}.{}",
+            cond.0,
+            cond.1
+        );
+
+        let mut index_to_use = None;
+
+        // Try to use index
+        for index in &indexes0 {
+            let index = self.get_index(table0_name, index)?;
+            if index.get_columns().len() == 1 && &index.get_columns()[0].name == cond.0 {
+                log::info!("Use index of {} on table {table0_name}", cond.0);
+                index_to_use = Some(index);
+                break;
+            }
+        }
+
+        if index_to_use.is_none() {
+            // Swap tables
+            (table0_name, table1_name) = (table1_name, table0_name);
+            cond = (cond.1, cond.0);
+
+            for index in &indexes1 {
+                let index = self.get_index(table0_name, index)?;
+                if index.get_columns().len() == 1 && &index.get_columns()[0].name == cond.0 {
+                    log::info!("Use index of {} on table {table0_name}", cond.0);
+                    index_to_use = Some(index);
+                    break;
+                }
+            }
+        }
+
+        // Now, table0 will have index if possible, so we use table1 as outer table
+        // and table0 as inner table.
+
+        let (inner_table_name, outer_table_name) = (table0_name, table1_name);
+        let (inner_cond, outer_cond) = cond;
+        let outer_table = self.get_table(outer_table_name)?;
+        let inner_table = self.get_table(inner_table_name)?;
+
+        let outer_cond_index = outer_table.get_schema().get_column_index(outer_cond);
+
+        fn match_where_clauses(
+            where_clauses: &[WhereClause],
+            table_name: &str,
+        ) -> Vec<WhereClause> {
+            where_clauses
+                .iter()
+                .filter(|&where_clause| match where_clause {
+                    WhereClause::OperatorExpression(ColumnSelector(table_selector, _), _, _) => {
+                        table_selector.as_ref().unwrap() == table_name
+                    }
+                })
+                .cloned()
+                .collect()
+        }
+
+        let outer_where_clauses = match_where_clauses(&real_where_clauses, table1_name);
+        let mut inner_where_clauses = match_where_clauses(&real_where_clauses, table0_name);
+
+        let schemas = [outer_table.get_schema(), inner_table.get_schema()];
+        let tables = [outer_table_name, inner_table_name];
+
+        let mut ret = vec![];
+
+        let mut fs = FS.lock()?;
+
+        if let Some(index) = index_to_use {
+            log::info!("Use index on join select");
+
+            let outer_table_pages = outer_table.get_schema().get_pages();
+
+            for page_id in 0..outer_table_pages {
+                log::info!("Iterating on page {page_id} of outer table");
+                let block = outer_table.select_page(
+                    &mut fs,
+                    page_id,
+                    &Selectors::All,
+                    outer_where_clauses.as_slice(),
+                )?;
+                for (outer_record, _) in block {
+                    // Query index
+                    let join_cond = outer_record.fields[outer_cond_index].clone();
+                    let key = Record::new(vec![join_cond]);
+                    let iter = index.index(&mut fs, &key)?;
+                    if iter.is_none() {
+                        continue;
+                    }
+
+                    let mut iter = iter.unwrap();
+                    loop {
+                        let (index_record, page_id, slot) = index.get_record(&mut fs, iter)?;
+                        // Iteration ended
+                        if index_record > key {
+                            break;
+                        }
+                        if let Some(inner_record) = inner_table.select_page_slot(
+                            &mut fs,
+                            page_id,
+                            slot,
+                            &Selectors::All,
+                            inner_where_clauses.as_slice(),
+                        )? {
+                            ret.push(Record::select_tables(
+                                &[&outer_record, &inner_record],
+                                selectors,
+                                &schemas,
+                                &tables,
+                            )?);
+                        }
+
+                        // Increment iterator
+                        if let Some(new_iter) = index.inc_iter(&mut fs, iter)? {
+                            iter = new_iter;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+        } else {
+            log::info!("Fallback to nested loop");
+
+            let outer_table_pages = outer_table.get_schema().get_pages();
+
+            for page_id in 0..outer_table_pages {
+                log::info!("Iterating on page {page_id} of outer table");
+                let block = outer_table.select_page(
+                    &mut fs,
+                    page_id,
+                    &Selectors::All,
+                    outer_where_clauses.as_slice(),
+                )?;
+                for (outer_record, _) in block {
+                    let join_cond = outer_record.fields[outer_cond_index].clone();
+
+                    inner_where_clauses.push(WhereClause::OperatorExpression(
+                        ColumnSelector(None, inner_cond.to_owned()),
+                        Operator::Eq,
+                        Expression::Value(join_cond),
+                    ));
+
+                    let inner_records =
+                        inner_table.select(&mut fs, &Selectors::All, &inner_where_clauses)?;
+                    for inner_record in inner_records {
+                        ret.push(Record::select_tables(
+                            &[&outer_record, &inner_record],
+                            selectors,
+                            &schemas,
+                            &tables,
+                        )?);
+                    }
+
+                    inner_where_clauses.pop();
+                }
+            }
+        }
+
+        Ok(ret)
     }
 
     /// Execute insert statement.
@@ -502,15 +745,7 @@ impl System {
         }
 
         // Open all indexes of this table.
-        let indexes: Vec<_> = table
-            .get_schema()
-            .get_indexes()
-            .iter()
-            .map(|index| index.name.clone())
-            .collect();
-        for index in &indexes {
-            self.open_index(table_name, index)?;
-        }
+        let indexes = self.open_indexes(table_name)?;
 
         let mut fs = FS.lock()?;
 
@@ -563,15 +798,7 @@ impl System {
         }
 
         // Open all indexes of this table.
-        let indexes: Vec<_> = table
-            .get_schema()
-            .get_indexes()
-            .iter()
-            .map(|index| index.name.clone())
-            .collect();
-        for index in &indexes {
-            self.open_index(name, index)?;
-        }
+        let indexes = self.open_indexes(name)?;
 
         let mut fs = FS.lock()?;
 
@@ -654,15 +881,7 @@ impl System {
         }
 
         // Open all indexes of this table.
-        let indexes: Vec<_> = table
-            .get_schema()
-            .get_indexes()
-            .iter()
-            .map(|index| index.name.clone())
-            .collect();
-        for index in &indexes {
-            self.open_index(name, index)?;
-        }
+        let indexes = self.open_indexes(name)?;
 
         let mut deleted = vec![];
 
@@ -847,7 +1066,7 @@ impl System {
         for i in 0..pages {
             log::info!("Adding index for page {i}");
             let table = self.get_table(table_name)?;
-            let keys = table.select_page(&mut fs, i, &selectors)?;
+            let keys = table.select_page(&mut fs, i, &selectors, &[])?;
             let index = self.get_index_mut(table_name, index_name)?;
             for (key, slot) in keys {
                 index.insert(&mut fs, key, i, slot)?;

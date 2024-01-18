@@ -7,4 +7,4 @@ run:
     - data
     - query
     - index
-
+    - join
