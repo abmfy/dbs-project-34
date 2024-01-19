@@ -219,6 +219,10 @@ fn parse_table_statement(
     }
 }
 
+fn parse_integer(pair: Pair<Rule>) -> Result<i32> {
+    Ok(pair.as_str().parse()?)
+}
+
 fn parse_value(value: Pair<Rule>) -> Result<Value> {
     let ret = match value.as_rule() {
         Rule::integer => Value::Int(value.as_str().parse()?),
@@ -861,6 +865,27 @@ fn parse_order_by_clause(pairs: Pairs<Rule>) -> Result<(ColumnSelector, bool)> {
     Ok((column, asc))
 }
 
+fn parse_limit_clause(pairs: Pairs<Rule>) -> Result<(i32, Option<i32>)> {
+    let mut limit = None;
+    let mut offset = None;
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::integer => {
+                limit = Some(parse_integer(pair)?);
+            }
+            Rule::offset_clause => {
+                offset = Some(parse_integer(pair.into_inner().next().unwrap())?);
+            }
+            _ => continue,
+        }
+    }
+
+    let limit = limit.unwrap();
+
+    Ok((limit, offset))
+}
+
 fn parse_select_statement(
     system: &mut System,
     statement: Pairs<Rule>,
@@ -872,6 +897,7 @@ fn parse_select_statement(
     let mut where_clauses = vec![];
     let mut group_by_clause = None;
     let mut order_by_clause = None;
+    let mut limit_clause = None;
 
     for pair in statement {
         match pair.as_rule() {
@@ -889,6 +915,9 @@ fn parse_select_statement(
             }
             Rule::order_by_clause => {
                 order_by_clause = Some(parse_order_by_clause(pair.into_inner())?);
+            }
+            Rule::limit_clause => {
+                limit_clause = Some(parse_limit_clause(pair.into_inner())?);
             }
             _ => continue,
         }
@@ -913,14 +942,20 @@ fn parse_select_statement(
 
     ret.set_titles(Row::from(columns));
 
-    let results = system.select(
+    let mut results = system.select(
         &selectors,
         &tables,
         where_clauses,
         group_by_clause,
         order_by_clause,
     )?;
-    let len = results.len();
+
+    if let Some((limit, offset)) = limit_clause {
+        if let Some(offset) = offset {
+            results = results.into_iter().skip(offset as usize).collect();
+        }
+        results = results.into_iter().take(limit as usize).collect();
+    }
 
     for (record, _, _) in results {
         let row: Row = record
@@ -930,6 +965,8 @@ fn parse_select_statement(
             .collect();
         ret.add_row(row);
     }
+
+    let len = ret.len();
 
     Ok((ret, QueryStat::Query(len)))
 }
