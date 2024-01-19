@@ -62,7 +62,7 @@ pub enum Error {
     ForeignKeyTypeMismatch,
     #[error("Constraint failed: referenced fields not primary key")]
     ForeignKeyNotPrimaryKey,
-    #[error("Constraint failed: duplicate value `{0}`")]
+    #[error("Constraint failed: duplicate value for constraint `{0}`")]
     DuplicateValue(String),
     #[error("Constraint failed: columns referenced by foreign key must be primary key")]
     ReferencedColumnsNotPrimaryKey,

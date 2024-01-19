@@ -307,7 +307,7 @@ impl System {
         // Check constraint schemas
         for constraint in &schema.constraints {
             match constraint {
-                Constraint::PrimaryKey { .. } => {
+                Constraint::PrimaryKey { .. } | Constraint::Unique { .. } => {
                     constraint.check(&[&schema])?;
                 }
                 Constraint::ForeignKey { ref_table, .. } => {
@@ -383,6 +383,7 @@ impl System {
                     let ref_table = self.get_table_mut(ref_table)?;
                     ref_table.add_referred_constraint(table_name.to_owned(), constraint.clone());
                 }
+                _ => unreachable!(),
             }
         }
 
@@ -1094,6 +1095,20 @@ impl System {
                             ))?;
                         }
                     }
+                    Constraint::Unique { .. } => {
+                        let index_name = constraint.get_index_name(false);
+
+                        let index = self.get_index(table_name, &index_name)?;
+                        let table = self.get_table(table_name)?;
+
+                        let selector = index.get_selector();
+                        let key = record.select(&selector, table.get_schema());
+
+                        let mut fs = FS.lock()?;
+                        if index.contains(&mut fs, &key)? {
+                            Err(Error::DuplicateValue(constraint.get_display_name()))?;
+                        }
+                    }
                 }
             }
 
@@ -1202,6 +1217,18 @@ impl System {
             })
             .cloned()
             .collect::<Vec<_>>();
+        let uniques = schema
+            .get_constraints()
+            .iter()
+            .filter(|c| {
+                if let Constraint::Unique { columns, .. } = c {
+                    columns.iter().any(|column| set_columns.contains(column))
+                } else {
+                    false
+                }
+            })
+            .cloned()
+            .collect::<Vec<_>>();
 
         log::info!("Constraints affected by this update: {primary_key:?}, {foreign_keys:?}, {referred_constraints:?}");
 
@@ -1262,6 +1289,31 @@ impl System {
 
                     if index.contains(&mut fs, &key_updated)? {
                         Err(Error::DuplicateValue(primary_key.get_display_name()))?;
+                    }
+                }
+
+                // Check unique constraint.
+                for unique in &uniques {
+                    log::info!("Checking unique constraint {}", unique.get_display_name());
+
+                    let index_name = unique.get_index_name(true);
+
+                    let index = self.get_index(table_name, &index_name)?;
+                    let table = self.get_table(table_name)?;
+
+                    let selector = index.get_selector();
+                    let key = record.select(&selector, table.get_schema());
+                    let key_updated = record_updated.select(&selector, table.get_schema());
+
+                    // Key not updated
+                    if key == key_updated {
+                        continue;
+                    }
+
+                    log::info!("Checking unique: {key:?}");
+
+                    if index.contains(&mut fs, &key_updated)? {
+                        Err(Error::DuplicateValue(unique.get_display_name()))?;
                     }
                 }
 
@@ -1752,7 +1804,35 @@ impl System {
 
     /// Execute drop index statement.
     pub fn drop_index(&mut self, table_name: &str, index_name: &str) -> Result<()> {
-        log::info!("Executing drop index statement");
+        log::info!("Executing drop index statement on {index_name}");
+
+        self.open_table(table_name)?;
+        let table = self.get_table(table_name)?;
+
+        // Remove unique constraint
+        let mut unique = None;
+        let mut unique_index_name = None;
+        for constraint in table.get_schema().get_constraints() {
+            if let Constraint::Unique {
+                name: Some(name), ..
+            } = constraint
+            {
+                log::info!("Index name of constraint is {}", constraint.get_index_name(true));
+                if name == index_name {
+                    unique = Some(name.clone());
+                    unique_index_name = Some(constraint.get_index_name(true));
+                    break;
+                }
+            }
+        }
+
+        let table = self.get_table_mut(table_name)?;
+        let index_name = if let Some(unique) = &unique {
+            table.remove_constraint(&unique.clone());
+            unique_index_name.as_ref().unwrap()
+        } else {
+            index_name
+        };
 
         // Writing back dirty pages in the cache.
         if let Some(index) = self
@@ -2050,6 +2130,81 @@ impl System {
 
         let ref_table = self.get_table_mut(ref_table_name)?;
         ref_table.remove_referred_constraint_of_table(table_name);
+
+        Ok(())
+    }
+
+    /// Execute add unique statement.
+    pub fn add_unique(
+        &mut self,
+        table_name: &str,
+        constraint_name: Option<&str>,
+        columns: &[&str],
+    ) -> Result<()> {
+        log::info!("Executing add unique statement for {constraint_name:?}");
+
+        self.open_table(table_name)?;
+        let table = self.get_table(table_name)?;
+
+        let schema = table.get_schema();
+        for &column in columns {
+            if !schema.has_column(column) {
+                return Err(Error::ColumnNotFound(column.to_owned()));
+            }
+        }
+
+        let constraint = Constraint::Unique {
+            name: constraint_name.map(|s| s.to_owned()),
+            columns: columns.iter().map(|&s| s.to_owned()).collect(),
+        };
+
+        log::info!("Creating index for unique {constraint_name:?}");
+        self.add_index(
+            false,
+            Some("unique"),
+            table_name,
+            constraint_name,
+            columns,
+            false,
+        )?;
+
+        // Initialize the index, while checking for duplicate values.
+        let index_name = constraint.get_index_name(false);
+        let index = self.get_index(table_name, &index_name)?;
+        let selector = index.get_selector();
+
+        let mut fs = FS.lock()?;
+
+        let table = self.get_table(table_name)?;
+        let pages = table.get_schema().get_pages();
+        for i in 0..pages {
+            log::info!("Adding index for page {i}");
+            let table = self.get_table(table_name)?;
+            let keys = table.select_page(&mut fs, i, &selector, &[])?;
+
+            let mut failed = false;
+            let index = self.get_index_mut(table_name, &index_name)?;
+            for (key, _, slot) in keys {
+                log::info!("Checking unique key {key:?}");
+                if index.contains(&mut fs, &key)? {
+                    failed = true;
+                    break;
+                } else {
+                    index.insert(&mut fs, key, i, slot)?;
+                }
+            }
+
+            if failed {
+                drop(fs);
+                self.drop_index(table_name, &index_name)?;
+                return Err(Error::DuplicateValue(
+                    constraint_name.unwrap_or("<anonymous>").to_string(),
+                ));
+            }
+        }
+
+        let table = self.get_table_mut(table_name)?;
+        table.add_constraint(constraint);
 
         Ok(())
     }

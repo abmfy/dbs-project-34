@@ -108,10 +108,9 @@ impl PartialOrd for Value {
             (Value::Varchar(a), Value::Date(b)) => {
                 a.trim_end_matches('\0').partial_cmp(&b.to_string())
             }
-            (Value::Date(a), Value::Varchar(b)) => a
-                .to_string()
-                .as_str()
-                .partial_cmp(b.trim_end_matches('\0')),
+            (Value::Date(a), Value::Varchar(b)) => {
+                a.to_string().as_str().partial_cmp(b.trim_end_matches('\0'))
+            }
             _ => None,
         }
     }
@@ -289,6 +288,10 @@ pub enum Constraint {
         ref_table: String,
         ref_columns: Vec<String>,
     },
+    Unique {
+        name: Option<String>,
+        columns: Vec<String>,
+    },
 }
 
 impl Constraint {
@@ -299,7 +302,7 @@ impl Constraint {
     /// Panics if the number of schemas are incorrect.
     pub fn check(&self, schemas: &[&Schema]) -> Result<()> {
         match self {
-            Self::PrimaryKey { columns, .. } => {
+            Self::PrimaryKey { columns, .. } | Self::Unique { columns, .. } => {
                 let schema = schemas[0];
                 for column in columns {
                     if !schema.has_column(column) {
@@ -359,16 +362,18 @@ impl Constraint {
     /// Get the name of this constraint.
     pub fn get_name(&self) -> Option<&str> {
         match self {
-            Self::PrimaryKey { name, .. } => name.as_deref(),
-            Self::ForeignKey { name, .. } => name.as_deref(),
+            Self::PrimaryKey { name, .. }
+            | Self::ForeignKey { name, .. }
+            | Self::Unique { name, .. } => name.as_deref(),
         }
     }
 
     /// Get the columns of this constraint.
     pub fn get_columns(&self) -> &[String] {
         match self {
-            Self::PrimaryKey { columns, .. } => columns,
-            Self::ForeignKey { columns, .. } => columns,
+            Self::PrimaryKey { columns, .. }
+            | Self::ForeignKey { columns, .. }
+            | Self::Unique { columns, .. } => columns,
         }
     }
 
@@ -435,6 +440,17 @@ impl Constraint {
                     }
                 )
             }
+            Self::Unique { name, columns } => {
+                String::from("unique.")
+                    + &format!(
+                        "{}.implicit",
+                        if let Some(name) = name {
+                            name.to_owned()
+                        } else {
+                            format!("annoy.{}", columns.join("_"))
+                        }
+                    )
+            }
         }
     }
 }
@@ -467,6 +483,13 @@ impl Display for Constraint {
                     ref_table,
                     ref_columns.join(", ")
                 )?;
+            }
+            Constraint::Unique { name, columns } => {
+                write!(f, "UNIQUE ")?;
+                if let Some(name) = name {
+                    write!(f, "{}", name)?;
+                }
+                write!(f, "({})", columns.join(", "))?;
             }
         }
         write!(f, ";")
@@ -702,7 +725,7 @@ pub enum Expression {
 pub enum WhereClause {
     OperatorExpression(ColumnSelector, Operator, Expression),
     LikeString(ColumnSelector, String),
-    IsNull(ColumnSelector, bool)
+    IsNull(ColumnSelector, bool),
 }
 
 impl WhereClause {
@@ -1015,8 +1038,9 @@ impl TableSchema {
         log::info!("Dropping constraint {name}");
         log::info!("Current constraints: {:?}", self.schema.constraints);
         self.schema.constraints.retain(|c| match c {
-            Constraint::PrimaryKey { name: n, .. } => n.as_deref() != Some(name),
-            Constraint::ForeignKey { name: n, .. } => n.as_deref() != Some(name),
+            Constraint::PrimaryKey { name: n, .. }
+            | Constraint::ForeignKey { name: n, .. }
+            | Constraint::Unique { name: n, .. } => n.as_deref() != Some(name),
         });
     }
 
@@ -1033,8 +1057,8 @@ impl TableSchema {
                 return true;
             }
             match c {
-                Constraint::PrimaryKey { name: n, .. } => n.as_deref() != Some(name),
                 Constraint::ForeignKey { name: n, .. } => n.as_deref() != Some(name),
+                _ => unreachable!(),
             }
         });
     }

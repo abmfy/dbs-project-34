@@ -1204,7 +1204,8 @@ fn parse_alter_statement(
         Rule::alter_drop_primary_key => parse_drop_primary_key_statement(system, pair.into_inner()),
         Rule::alter_add_foreign_key => parse_add_foreign_key_statement(system, pair.into_inner()),
         Rule::alter_drop_foreign_key => parse_drop_foreign_key_statement(system, pair.into_inner()),
-        _ => todo!(),
+        Rule::alter_add_unique => parse_add_unique(system, pair.into_inner()),
+        _ => unreachable!(),
     }
 }
 
@@ -1394,6 +1395,34 @@ fn parse_drop_foreign_key_statement(
     let constraint = constraint.unwrap();
 
     system.drop_foreign_key(table, constraint)?;
+
+    Ok((fresh_table(), QueryStat::Update(0)))
+}
+
+fn parse_add_unique(system: &mut System, pairs: Pairs<Rule>) -> Result<(Table, QueryStat)> {
+    let mut table = None;
+    let mut constraint = None;
+    let mut columns = None;
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::identifier => {
+                table = Some(pair.as_str());
+            }
+            Rule::index_identifier => {
+                constraint = Some(parse_identifier(pair.into_inner()));
+            }
+            Rule::identifiers => {
+                columns = Some(parse_identifiers(pair.into_inner()));
+            }
+            _ => continue,
+        }
+    }
+
+    let table = table.unwrap();
+    let columns = columns.unwrap();
+
+    system.add_unique(table, constraint, &columns)?;
 
     Ok((fresh_table(), QueryStat::Update(0)))
 }
