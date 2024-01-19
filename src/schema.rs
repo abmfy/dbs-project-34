@@ -5,6 +5,7 @@ use std::{
     collections::HashMap,
     fmt::{self, Display, Formatter},
     fs::File,
+    ops::{Add, Div},
     path::{Path, PathBuf},
 };
 
@@ -101,6 +102,91 @@ impl Value {
                 | (Value::Float(_), Type::Float)
                 | (Value::Varchar(_), Type::Varchar(_))
         )
+    }
+
+    /// Compare with other value, and return the smaller one.
+    pub fn min<'a>(&'a self, other: &'a Self) -> &'a Self {
+        match (self, other) {
+            (Value::Null, _) => other,
+            (_, Value::Null) => self,
+            (Value::Int(a), Value::Int(b)) => {
+                if a < b {
+                    self
+                } else {
+                    other
+                }
+            }
+            (Value::Float(a), Value::Float(b)) => {
+                if a < b {
+                    self
+                } else {
+                    other
+                }
+            }
+            (Value::Varchar(a), Value::Varchar(b)) => {
+                if a < b {
+                    self
+                } else {
+                    other
+                }
+            }
+            _ => self,
+        }
+    }
+
+    /// Compare with other value, and return the larger one.
+    pub fn max<'a>(&'a self, other: &'a Self) -> &'a Self {
+        match (self, other) {
+            (Value::Null, _) => other,
+            (_, Value::Null) => self,
+            (Value::Int(a), Value::Int(b)) => {
+                if a > b {
+                    self
+                } else {
+                    other
+                }
+            }
+            (Value::Float(a), Value::Float(b)) => {
+                if a > b {
+                    self
+                } else {
+                    other
+                }
+            }
+            (Value::Varchar(a), Value::Varchar(b)) => {
+                if a > b {
+                    self
+                } else {
+                    other
+                }
+            }
+            _ => self,
+        }
+    }
+}
+
+impl Add for Value {
+    type Output = Value;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+            (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
+            (Value::Varchar(a), Value::Varchar(b)) => Value::Varchar(a + &b),
+            _ => Value::Null,
+        }
+    }
+}
+
+impl Div<usize> for Value {
+    type Output = Value;
+
+    fn div(self, rhs: usize) -> Self::Output {
+        match self {
+            Value::Int(v) => Value::Float(v as f64 / rhs as f64),
+            Value::Float(v) => Value::Float(v / rhs as f64),
+            _ => Value::Null,
+        }
     }
 }
 
@@ -372,6 +458,12 @@ impl Selectors {
                                 return Err(Error::ColumnNotFound(column.clone()));
                             }
                         }
+                        Selector::Aggregate(_, ColumnSelector(_, column)) => {
+                            if !schema.has_column(column) {
+                                return Err(Error::ColumnNotFound(column.clone()));
+                            }
+                        }
+                        Selector::Count => {}
                     }
                 }
                 Ok(())
@@ -394,6 +486,10 @@ impl Selectors {
                         Selector::Column(column_selector) => {
                             column_selector.check_tables(schemas, tables)?;
                         }
+                        Selector::Aggregate(_, column_selector) => {
+                            column_selector.check_tables(schemas, tables)?;
+                        }
+                        Selector::Count => {}
                     }
                 }
                 Ok(())
@@ -436,10 +532,54 @@ impl ColumnSelector {
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum Aggregator {
+    Avg,
+    Min,
+    Max,
+    Sum,
+}
+
+impl Aggregator {
+    pub fn aggregate(&self, values: Vec<Value>) -> Value {
+        match self {
+            Aggregator::Avg => {
+                let len = values.len();
+                let sum = Self::Sum.aggregate(values);
+                sum / len
+            }
+            Aggregator::Min => values
+                .iter()
+                .reduce(Value::min)
+                .cloned()
+                .unwrap_or(Value::Null),
+            Aggregator::Max => values
+                .iter()
+                .reduce(Value::max)
+                .cloned()
+                .unwrap_or(Value::Null),
+            Aggregator::Sum => values.into_iter().reduce(Add::add).unwrap_or(Value::Null),
+        }
+    }
+}
+
+impl Display for Aggregator {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Aggregator::Avg => write!(f, "AVG"),
+            Aggregator::Min => write!(f, "MIN"),
+            Aggregator::Max => write!(f, "MAX"),
+            Aggregator::Sum => write!(f, "SUM"),
+        }
+    }
+}
+
 /// Query selector.
 #[derive(Clone, Debug)]
 pub enum Selector {
     Column(ColumnSelector),
+    Aggregate(Aggregator, ColumnSelector),
+    Count,
 }
 
 impl Display for Selector {
@@ -451,6 +591,15 @@ impl Display for Selector {
                 }
                 write!(f, "{}", column)?;
             }
+            Selector::Aggregate(agg, ColumnSelector(table, column)) => {
+                write!(f, "{}(", agg)?;
+                if let Some(table) = table {
+                    write!(f, "{}.", table)?;
+                }
+                write!(f, "{}", column)?;
+                write!(f, ")")?;
+            }
+            Selector::Count => write!(f, "COUNT(*)")?,
         }
         Ok(())
     }

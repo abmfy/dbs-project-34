@@ -9,7 +9,7 @@ greater_equal = { ">=" }
 not_equal = { "<>" }
 
 count = { "COUNT" }
-average = { "AVERAGE" }
+average = { "AVG" }
 max = { "MAX" }
 min = { "MIN" }
 sum = { "SUM" }
@@ -155,7 +155,7 @@ selectors = { selector_any | selector_list }
 selector_any = { "*" }
 selector_list = { selector ~ ("," ~ selector)* }
 
-selector = { column | arrgegate_clause | count_clause }
+selector = { count_clause | arrgegate_clause | column }
 arrgegate_clause = { aggregator ~ "(" ~ column ~ ")" }
 count_clause = { count ~ "(" ~ "*" ~ ")" }
 
@@ -163,4 +163,4 @@ identifiers = { identifier ~ ("," ~ identifier)* }
 
 operator = { less_equal | greater_equal | not_equal | less | greater | equal_or_assign }
 
-aggregator = { count | average | max | min | sum }
+aggregator = { average | max | min | sum }

@@ -495,6 +495,33 @@ impl System {
         Ok(count)
     }
 
+    /// Perform aggregation on some query results.
+    pub fn aggregate(
+        &self,
+        selectors: &[Selector],
+        results: Vec<SelectResult>,
+    ) -> Vec<SelectResult> {
+        let mut fields = vec![];
+
+        for (i, selector) in selectors.iter().enumerate() {
+            match selector {
+                Selector::Aggregate(aggregator, _) => {
+                    let mut values = vec![];
+                    for (record, _, _) in &results {
+                        values.push(record.fields[i].clone());
+                    }
+                    fields.push(aggregator.aggregate(values));
+                }
+                Selector::Count => {
+                    fields.push(Value::Int(results.len() as i32));
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        vec![(Record::new(fields), 0, 0)]
+    }
+
     /// Execute select statement.
     pub fn select(
         &mut self,
@@ -531,7 +558,7 @@ impl System {
 
         // Check index availability
         let index = self.match_index(&mut fs, tables[0], where_clauses.as_slice())?;
-        if let Some((index_name, left_iter, right_key)) = index {
+        let ret = if let Some((index_name, left_iter, right_key)) = index {
             log::info!("Using index {index_name}");
 
             // Use index
@@ -544,7 +571,7 @@ impl System {
                 let (record, page, slot) = index.get_record(&mut fs, iter)?;
                 // Iteration ended
                 if record > right_key {
-                    return Ok(ret);
+                    break ret;
                 }
                 let table = self.get_table(table_name)?;
                 if let Some(record) = table.select_page_slot(
@@ -559,12 +586,39 @@ impl System {
                 if let Some(new_iter) = index.inc_iter(&mut fs, iter)? {
                     iter = new_iter;
                 } else {
-                    return Ok(ret);
+                    break ret;
                 }
             }
         } else {
-            let ret = table.select(&mut fs, selectors, where_clauses.as_slice())?;
-            Ok(ret)
+            table.select(&mut fs, selectors, where_clauses.as_slice())?
+        };
+
+        // Perform aggregation
+        match selectors {
+            Selectors::All => Ok(ret),
+            Selectors::Some(selectors) => {
+                // Whether aggregation is needed
+                let mut aggregate = false;
+                for selector in selectors {
+                    match selector {
+                        Selector::Aggregate { .. } | Selector::Count => {
+                            aggregate = true;
+                            break;
+                        }
+                        _ => {
+                            if aggregate {
+                                return Err(Error::MixedAggregate);
+                            }
+                        }
+                    }
+                }
+
+                Ok(if aggregate {
+                    self.aggregate(selectors.as_slice(), ret)
+                } else {
+                    ret
+                })
+            }
         }
     }
 

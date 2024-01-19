@@ -261,6 +261,12 @@ impl Record {
                         Selector::Column(ColumnSelector(_, column)) => {
                             fields.push(self.fields[schema.get_column_index(column)].clone())
                         }
+                        Selector::Aggregate(_, ColumnSelector(_, column)) => {
+                            fields.push(self.fields[schema.get_column_index(column)].clone())
+                        }
+                        Selector::Count => {
+                            fields.push(Value::Int(1));
+                        }
                     }
                 }
                 Record::new(fields)
@@ -300,6 +306,20 @@ impl Record {
                                 .ok_or(Error::TableNotFound(table))?;
                             let column_index = schemas[table_index].get_column_index(column);
                             fields.push(records[table_index].fields[column_index].clone());
+                        }
+                        Selector::Aggregate(_, ColumnSelector(table, column)) => {
+                            let table = table
+                                .clone()
+                                .ok_or(Error::InexactColumn(column.to_owned()))?;
+                            let table_index = tables
+                                .iter()
+                                .position(|&t| t == table)
+                                .ok_or(Error::TableNotFound(table))?;
+                            let column_index = schemas[table_index].get_column_index(column);
+                            fields.push(records[table_index].fields[column_index].clone());
+                        }
+                        Selector::Count => {
+                            fields.push(Value::Int(1));
                         }
                     }
                 }

@@ -75,6 +75,8 @@ pub enum Error {
     JoinConditionCount,
     #[error("Only equal join is supported")]
     JoinOperation,
+    #[error("Aggregation query mixed with non-aggregation query")]
+    MixedAggregate,
 
     #[error("CSV error: {0}")]
     Csv(#[from] CsvError),

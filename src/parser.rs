@@ -16,7 +16,7 @@ use crate::{
     record::{Record, RecordSchema},
     schema::{
         Column, ColumnSelector, Constraint, Expression, Field, Operator, Schema, Selector,
-        Selectors, SetPair, Type, Value, WhereClause,
+        Selectors, SetPair, Type, Value, WhereClause, Aggregator,
     },
     system::System,
 };
@@ -590,6 +590,31 @@ fn parse_column_selector(pairs: Pairs<Rule>) -> Result<ColumnSelector> {
     ))
 }
 
+fn parse_aggregator(paris: Pairs<Rule>) -> Result<Aggregator> {
+    let mut ret = None;
+
+    for pair in paris {
+        match pair.as_rule() {
+            Rule::sum => {
+                ret = Some(Aggregator::Sum);
+            }
+            Rule::average => {
+                ret = Some(Aggregator::Avg);
+            }
+            Rule::min => {
+                ret = Some(Aggregator::Min);
+            }
+            Rule::max => {
+                ret = Some(Aggregator::Max);
+            }
+            _ => continue,
+        }
+    }
+
+    Ok(ret.unwrap())
+
+}
+
 fn parse_selector(pairs: Pairs<Rule>) -> Result<Selector> {
     let mut ret = None;
 
@@ -597,6 +622,30 @@ fn parse_selector(pairs: Pairs<Rule>) -> Result<Selector> {
         match pair.as_rule() {
             Rule::column => {
                 ret = Some(Selector::Column(parse_column_selector(pair.into_inner())?));
+            }
+            Rule::arrgegate_clause => {
+                let mut aggregator = None;
+                let mut column = None;
+
+                for pair in pair.into_inner() {
+                    match pair.as_rule() {
+                        Rule::aggregator => {
+                            aggregator = Some(parse_aggregator(pair.into_inner())?);
+                        }
+                        Rule::column => {
+                            column = Some(parse_column_selector(pair.into_inner())?);
+                        }
+                        _ => continue,
+                    }
+                }
+
+                let aggregator = aggregator.unwrap();
+                let column = column.unwrap();
+
+                ret = Some(Selector::Aggregate(aggregator.to_owned(), column));
+            }
+            Rule::count_clause => {
+                ret = Some(Selector::Count);
             }
             _ => continue,
         }
