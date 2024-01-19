@@ -155,8 +155,8 @@ selectors = { selector_any | selector_list }
 selector_any = { "*" }
 selector_list = { selector ~ ("," ~ selector)* }
 
-selector = { count_clause | arrgegate_clause | column }
-arrgegate_clause = { aggregator ~ "(" ~ column ~ ")" }
+selector = { count_clause | aggregate_clause | column }
+aggregate_clause = { aggregator ~ "(" ~ column ~ ")" }
 count_clause = { count ~ "(" ~ "*" ~ ")" }
 
 identifiers = { identifier ~ ("," ~ identifier)* }

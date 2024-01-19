@@ -495,31 +495,84 @@ impl System {
         Ok(count)
     }
 
+    /// Perform grouping on some query results.
+    pub fn group(
+        &self,
+        selectors: &[Selector],
+        results: Vec<SelectResult>,
+        group_by: &ColumnSelector,
+    ) -> Vec<Vec<SelectResult>> {
+        log::info!("Grouping on {group_by:?}");
+
+        let mut ret = vec![];
+        let mut group = HashMap::new();
+        let mut group_by_index = None;
+
+        for (i, selector) in selectors.iter().enumerate() {
+            match selector {
+                Selector::Column(c) => {
+                    if c == group_by {
+                        group_by_index = Some(i);
+                    }
+                }
+                _ => (),
+            }
+        }
+
+        for (record, page, slot) in results {
+            let group_by_value = record.fields[group_by_index.unwrap()].clone();
+            let group = group.entry(group_by_value).or_insert_with(|| vec![]);
+            group.push((record, page, slot));
+        }
+
+        for (_, group) in group {
+            ret.push(group);
+        }
+
+        ret
+    }
+
     /// Perform aggregation on some query results.
     pub fn aggregate(
         &self,
         selectors: &[Selector],
-        results: Vec<SelectResult>,
+        results: Vec<Vec<SelectResult>>,
+        grouped: bool,
     ) -> Vec<SelectResult> {
-        let mut fields = vec![];
+        let mut ret = vec![];
 
-        for (i, selector) in selectors.iter().enumerate() {
-            match selector {
-                Selector::Aggregate(aggregator, _) => {
-                    let mut values = vec![];
-                    for (record, _, _) in &results {
-                        values.push(record.fields[i].clone());
+        for group in results {
+            let mut fields = vec![];
+
+            for (i, selector) in selectors.iter().enumerate() {
+                match selector {
+                    Selector::Aggregate(aggregator, _) => {
+                        let mut values = vec![];
+                        for (record, _, _) in &group {
+                            values.push(record.fields[i].clone());
+                        }
+                        fields.push(aggregator.aggregate(values));
                     }
-                    fields.push(aggregator.aggregate(values));
+                    Selector::Count => {
+                        fields.push(Value::Int(group.len() as i32));
+                    }
+                    _ => {
+                        fields.push(group[0].0.fields[i].clone());
+                    }
                 }
-                Selector::Count => {
-                    fields.push(Value::Int(results.len() as i32));
-                }
-                _ => unreachable!(),
+            }
+
+            ret.push((Record::new(fields), 0, 0));
+        }
+
+        if grouped {
+            // Remove the added group column
+            for (record, _, _) in &mut ret {
+                record.fields.pop();
             }
         }
 
-        vec![(Record::new(fields), 0, 0)]
+        ret
     }
 
     /// Execute select statement.
@@ -528,8 +581,24 @@ impl System {
         selectors: &Selectors,
         tables: &[&str],
         where_clauses: Vec<WhereClause>,
+        group_by: Option<ColumnSelector>,
     ) -> Result<Vec<SelectResult>> {
         log::info!("Executing select statement");
+
+        // Add group as last column
+        let selectors = if let Some(group_by) = &group_by {
+            match selectors {
+                Selectors::All => Selectors::All,
+                Selectors::Some(selectors) => {
+                    let mut selectors = selectors.clone();
+                    selectors.push(Selector::Column(group_by.clone()));
+                    Selectors::Some(selectors)
+                }
+            }
+        } else {
+            selectors.clone()
+        };
+        let selectors = &selectors;
 
         match tables.len() {
             0 => unreachable!(),
@@ -603,20 +672,29 @@ impl System {
                     match selector {
                         Selector::Aggregate { .. } | Selector::Count => {
                             aggregate = true;
-                            break;
                         }
-                        _ => {
-                            if aggregate {
+                        Selector::Column(c) => {
+                            if let Some(group_by) = &group_by {
+                                if c != group_by {
+                                    return Err(Error::MixedAggregate);
+                                }
+                            } else if aggregate {
                                 return Err(Error::MixedAggregate);
                             }
                         }
                     }
                 }
 
-                Ok(if aggregate {
-                    self.aggregate(selectors.as_slice(), ret)
+                let mut ret = if let Some(group_by) = &group_by {
+                    self.group(selectors, ret, group_by)
                 } else {
-                    ret
+                    vec![ret]
+                };
+
+                Ok(if aggregate {
+                    self.aggregate(selectors.as_slice(), ret, group_by.is_some())
+                } else {
+                    ret.pop().unwrap_or_default()
                 })
             }
         }
@@ -1034,7 +1112,7 @@ impl System {
             log::info!("Checking constraints in update");
 
             // Peek records to be updated.
-            let records = self.select(&Selectors::All, &[name], where_clauses.to_vec())?;
+            let records = self.select(&Selectors::All, &[name], where_clauses.to_vec(), None)?;
 
             // Open table and indexes of constraints.
             for fk in &foreign_keys {
@@ -1281,7 +1359,7 @@ impl System {
         // Check foreign key constraints.
         if !referred_constraints.is_empty() {
             // Peek records to be deleted.
-            let records = self.select(&Selectors::All, &[name], where_clauses.to_vec())?;
+            let records = self.select(&Selectors::All, &[name], where_clauses.to_vec(), None)?;
 
             let mut fs = FS.lock()?;
 

@@ -5,6 +5,7 @@ use std::{
     collections::HashMap,
     fmt::{self, Display, Formatter},
     fs::File,
+    hash::{Hash, Hasher},
     ops::{Add, Div},
     path::{Path, PathBuf},
 };
@@ -68,6 +69,19 @@ impl PartialEq for Value {
         }
     }
 }
+
+impl Hash for Value {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Value::Null => 0.hash(state),
+            Value::Int(v) => v.hash(state),
+            Value::Float(v) => v.to_bits().hash(state),
+            Value::Varchar(v) => v.trim_end_matches('\0').hash(state),
+        }
+    }
+}
+
+impl Eq for Value {}
 
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
@@ -440,6 +454,7 @@ pub enum Field {
 }
 
 /// Query selectors in a select statement.
+#[derive(Clone, Debug)]
 pub enum Selectors {
     All,
     Some(Vec<Selector>),
@@ -502,6 +517,16 @@ impl Selectors {
 /// where table part is optional
 #[derive(Clone, Debug)]
 pub struct ColumnSelector(pub Option<String>, pub String);
+
+impl PartialEq for ColumnSelector {
+    fn eq(&self, other: &Self) -> bool {
+        if let (Some(table0), Some(table1)) = (&self.0, &other.0) {
+            table0 == table1 && self.1 == other.1
+        } else {
+            self.1 == other.1
+        }
+    }
+}
 
 impl ColumnSelector {
     /// Check the column selector against some table schemas.

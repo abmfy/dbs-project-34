@@ -15,8 +15,8 @@ use crate::{
     index::IndexSchema,
     record::{Record, RecordSchema},
     schema::{
-        Column, ColumnSelector, Constraint, Expression, Field, Operator, Schema, Selector,
-        Selectors, SetPair, Type, Value, WhereClause, Aggregator,
+        Aggregator, Column, ColumnSelector, Constraint, Expression, Field, Operator, Schema,
+        Selector, Selectors, SetPair, Type, Value, WhereClause,
     },
     system::System,
 };
@@ -612,7 +612,6 @@ fn parse_aggregator(paris: Pairs<Rule>) -> Result<Aggregator> {
     }
 
     Ok(ret.unwrap())
-
 }
 
 fn parse_selector(pairs: Pairs<Rule>) -> Result<Selector> {
@@ -623,7 +622,7 @@ fn parse_selector(pairs: Pairs<Rule>) -> Result<Selector> {
             Rule::column => {
                 ret = Some(Selector::Column(parse_column_selector(pair.into_inner())?));
             }
-            Rule::arrgegate_clause => {
+            Rule::aggregate_clause => {
                 let mut aggregator = None;
                 let mut column = None;
 
@@ -792,6 +791,21 @@ fn parse_where_and_clause(pairs: Pairs<Rule>) -> Result<Vec<WhereClause>> {
     Ok(ret)
 }
 
+fn parse_group_by_clause(pairs: Pairs<Rule>) -> Result<ColumnSelector> {
+    let mut ret = None;
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::column => {
+                ret = Some(parse_column_selector(pair.into_inner()));
+            }
+            _ => continue,
+        }
+    }
+
+    ret.unwrap()
+}
+
 fn parse_select_statement(
     system: &mut System,
     statement: Pairs<Rule>,
@@ -801,6 +815,7 @@ fn parse_select_statement(
     let mut selectors = None;
     let mut tables = None;
     let mut where_clauses = vec![];
+    let mut group_by_clause = None;
 
     for pair in statement {
         match pair.as_rule() {
@@ -812,6 +827,9 @@ fn parse_select_statement(
             }
             Rule::where_and_clause => {
                 where_clauses = parse_where_and_clause(pair.into_inner())?;
+            }
+            Rule::group_by_clause => {
+                group_by_clause = Some(parse_group_by_clause(pair.into_inner())?);
             }
             _ => continue,
         }
@@ -836,7 +854,7 @@ fn parse_select_statement(
 
     ret.set_titles(Row::from(columns));
 
-    let results = system.select(&selectors, &tables, where_clauses)?;
+    let results = system.select(&selectors, &tables, where_clauses, group_by_clause)?;
     let len = results.len();
 
     for (record, _, _) in results {
