@@ -10,6 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{LINK_SIZE, PAGE_SIZE};
@@ -672,6 +673,7 @@ pub enum Expression {
 #[derive(Clone, Debug)]
 pub enum WhereClause {
     OperatorExpression(ColumnSelector, Operator, Expression),
+    LikeString(ColumnSelector, String),
 }
 
 impl WhereClause {
@@ -692,6 +694,12 @@ impl WhereClause {
                     }
                 }
             }
+            WhereClause::LikeString(ColumnSelector(_, column), _) => {
+                if !schema.has_column(column) {
+                    return Err(Error::ColumnNotFound(column.clone()));
+                }
+                Ok(())
+            }
         }
     }
 
@@ -710,6 +718,9 @@ impl WhereClause {
                         column_selector.check_tables(schemas, tables)
                     }
                 }
+            }
+            WhereClause::LikeString(column_selector, _) => {
+                column_selector.check_tables(schemas, tables)
             }
         }
     }
@@ -734,6 +745,24 @@ impl WhereClause {
                     Operator::Le => value <= expr,
                     Operator::Gt => value > expr,
                     Operator::Ge => value >= expr,
+                }
+            }
+            WhereClause::LikeString(ColumnSelector(_, column), pattern) => {
+                let column = schema.get_column(column);
+                let value = &record.fields[schema.column_map[&column.name]];
+                if let Value::Varchar(v) = value {
+                    let v = v.trim_end_matches('\0');
+                    let pattern = regex::escape(pattern);
+                    let pattern = pattern.replace('_', ".");
+                    let pattern = pattern.replace('%', ".*");
+                    let pattern = format!("^{pattern}$");
+                    let re = RegexBuilder::new(&pattern)
+                        .multi_line(true)
+                        .build()
+                        .expect("Failed to build regex");
+                    re.is_match(&v)
+                } else {
+                    false
                 }
             }
         }

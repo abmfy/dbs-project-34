@@ -761,6 +761,28 @@ fn parse_where_operator_expression(pairs: Pairs<Rule>) -> Result<WhereClause> {
     ))
 }
 
+fn parse_where_like_string(pairs: Pairs<Rule>) -> Result<WhereClause> {
+    let mut column = None;
+    let mut string = None;
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::column => {
+                column = Some(parse_column_selector(pair.into_inner())?);
+            }
+            Rule::string => {
+                string = Some(pair.into_inner().next().unwrap().as_str().to_owned());
+            }
+            _ => continue,
+        }
+    }
+
+    let column = column.unwrap();
+    let string = string.unwrap();
+
+    Ok(WhereClause::LikeString(column, string))
+}
+
 fn parse_where_clause(pairs: Pairs<Rule>) -> Result<WhereClause> {
     let mut ret = None;
 
@@ -768,6 +790,9 @@ fn parse_where_clause(pairs: Pairs<Rule>) -> Result<WhereClause> {
         match pair.as_rule() {
             Rule::where_operator_expression => {
                 ret = Some(parse_where_operator_expression(pair.into_inner())?);
+            }
+            Rule::where_like_string => {
+                ret = Some(parse_where_like_string(pair.into_inner())?);
             }
             _ => continue,
         }

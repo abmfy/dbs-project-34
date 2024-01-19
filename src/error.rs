@@ -7,6 +7,7 @@ use std::sync::{MutexGuard, PoisonError};
 
 use csv::Error as CsvError;
 use pest::error::Error as PestError;
+use regex::Error as RegexError;
 use rustyline::error::ReadlineError;
 use serde_json::error::Error as SerdeError;
 use thiserror::Error;
@@ -90,6 +91,8 @@ pub enum Error {
     Poison(#[from] PoisonError<MutexGuard<'static, PageCache>>),
     #[error("Readline error: {0}")]
     Readline(#[from] ReadlineError),
+    #[error("Regex error: {0}")]
+    Regex(#[from] RegexError),
     #[error("Serialization error: {0}")]
     Serde(#[from] SerdeError),
     #[error("Syntax error:\n{0}")]

@@ -810,6 +810,9 @@ impl System {
                     WhereClause::OperatorExpression(ColumnSelector(table_selector, _), _, _) => {
                         table_selector.as_ref().unwrap() == table_name
                     }
+                    WhereClause::LikeString(ColumnSelector(table_selector, _), _) => {
+                        table_selector.as_ref().unwrap() == table_name
+                    }
                 })
                 .cloned()
                 .collect()
@@ -1495,6 +1498,7 @@ impl System {
                         }
                     }
                 }
+                _ => (),
             }
         }
 

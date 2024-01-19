@@ -1027,6 +1027,7 @@ dependencies = [
  "pest",
  "pest_derive",
  "prettytable-rs",
+ "regex",
  "rustyline",
  "serde",
  "serde_json",
