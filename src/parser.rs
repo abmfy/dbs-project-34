@@ -310,7 +310,7 @@ fn parse_primary_key(pairs: Pairs<Rule>) -> Result<Constraint> {
     Ok(Constraint::PrimaryKey { name, columns })
 }
 
-fn parse_foreign_key(pairs: Pairs<Rule>) -> Result<Constraint> {
+fn parse_foreign_key(pairs: Pairs<Rule>, table: &str) -> Result<Constraint> {
     let mut name = None;
     let mut columns = vec![];
     let mut ref_table = None;
@@ -360,12 +360,13 @@ fn parse_foreign_key(pairs: Pairs<Rule>) -> Result<Constraint> {
     Ok(Constraint::ForeignKey {
         name,
         columns,
+        referrer: table.to_owned(),
         ref_table,
         ref_columns,
     })
 }
 
-fn parse_field_list(field_list: Pairs<Rule>) -> Result<Vec<Field>> {
+fn parse_field_list(field_list: Pairs<Rule>, table: &str) -> Result<Vec<Field>> {
     let mut ret = vec![];
 
     for field in field_list {
@@ -374,9 +375,10 @@ fn parse_field_list(field_list: Pairs<Rule>) -> Result<Vec<Field>> {
             Rule::primary_key => {
                 ret.push(Field::Constraint(parse_primary_key(field.into_inner())?))
             }
-            Rule::foreign_key => {
-                ret.push(Field::Constraint(parse_foreign_key(field.into_inner())?))
-            }
+            Rule::foreign_key => ret.push(Field::Constraint(parse_foreign_key(
+                field.into_inner(),
+                table,
+            )?)),
             _ => continue,
         }
     }
@@ -399,7 +401,7 @@ fn parse_create_table_statement(
                 name = Some(pair.as_str());
             }
             Rule::field_list => {
-                fields = Some(parse_field_list(pair.into_inner())?);
+                fields = Some(parse_field_list(pair.into_inner(), name.unwrap())?);
             }
             _ => continue,
         }
@@ -467,6 +469,7 @@ fn parse_create_table_statement(
             full: None,
             columns,
             constraints,
+            referred_constraints: vec![],
             indexes: vec![],
         },
     )?;
@@ -787,7 +790,7 @@ fn parse_select_statement(
     let results = system.select(&selectors, &tables, where_clauses)?;
     let len = results.len();
 
-    for record in results {
+    for (record, _, _) in results {
         let row: Row = record
             .fields
             .into_iter()

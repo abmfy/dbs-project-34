@@ -17,10 +17,10 @@ use crate::error::Result;
 use crate::file::PageCache;
 use crate::index::IndexSchema;
 use crate::record::Record;
-use crate::schema::{Selectors, SetPair, TableSchema, WhereClause, Constraint};
+use crate::schema::{Constraint, Selectors, SetPair, TableSchema, WhereClause};
 
-/// Select result containing slot id.
-pub type SelectResult = (Record, usize);
+/// Select result containing page and slot id.
+pub type SelectResult = (Record, usize, usize);
 
 /// A table.
 pub struct Table {
@@ -162,20 +162,20 @@ impl Table {
         fs: &mut PageCache,
         selector: &Selectors,
         where_clauses: &[WhereClause],
-    ) -> Result<Vec<Record>> {
+    ) -> Result<Vec<SelectResult>> {
         let mut records = Vec::new();
 
         for page_id in 0..self.schema.get_pages() {
             let page_buf = fs.get(self.fd, page_id)?;
             let page = TablePage::new(self, page_buf);
 
-            for (record, _, _) in &page {
+            for (record, slot, _) in &page {
                 if where_clauses
                     .iter()
                     .all(|clause| clause.matches(&record, &self.schema))
                 {
                     // record_count += 1;
-                    records.push(record.select(selector, &self.schema));
+                    records.push((record.select(selector, &self.schema), page_id, slot));
                 }
             }
         }
@@ -227,7 +227,7 @@ impl Table {
                 .iter()
                 .all(|clause| clause.matches(&record, &self.schema))
             {
-                ret.push((record.select(selector, &self.schema), slot));
+                ret.push((record.select(selector, &self.schema), page_id, slot));
             }
         }
 
@@ -458,11 +458,21 @@ impl Table {
         self.schema.add_constraint(schema);
     }
 
+    /// Save an referred constraint schema into the table.
+    pub fn add_referred_constraint(&mut self, table: String, schema: Constraint) {
+        log::info!("Adding referred constraint {schema:?}");
+        self.schema.add_referred_constraint(table, schema);
+    }
+
     /// Remove primary key on the table.
     pub fn remove_primary_key(&mut self) {
         self.schema.remove_primary_key();
     }
-    
+
+    /// Remove referred constraint on the table.
+    pub fn remove_referred_constraint(&mut self, table: &str) {
+        self.schema.remove_referred_constraints(table);
+    }
 }
 
 /// Common behaviors between TablePage and TablePageMut.

@@ -64,6 +64,7 @@ fn batch_main(mut system: System) -> Result<()> {
                     }
                 }
                 Err(err) => {
+                    log::error!("Error: {err}");
                     println!("!ERROR");
                     println!("{err}");
                 }

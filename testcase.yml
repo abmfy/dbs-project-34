@@ -9,4 +9,5 @@ run:
     - index
     - join
     - pk
+    - fk
     - comb

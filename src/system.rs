@@ -14,7 +14,7 @@ use crate::schema::{
     ColumnSelector, Constraint, Expression, Operator, Schema, Selector, Selectors, SetPair,
     TableSchema, Value, WhereClause,
 };
-use crate::table::Table;
+use crate::table::{SelectResult, Table};
 
 /// Database system manager.
 pub struct System {
@@ -251,7 +251,7 @@ impl System {
         let key = (table.to_owned(), name.to_owned());
         self.indexes
             .get(&key)
-            .ok_or(Error::IndexNotFound(name.to_owned()))
+            .ok_or(Error::IndexNotFound(name.to_owned(), table.to_owned()))
     }
 
     /// Get a index for write.
@@ -259,7 +259,7 @@ impl System {
         let key = (table.to_owned(), name.to_owned());
         self.indexes
             .get_mut(&key)
-            .ok_or(Error::IndexNotFound(name.to_owned()))
+            .ok_or(Error::IndexNotFound(name.to_owned(), table.to_owned()))
     }
 
     /// Get a list of tables in current database.
@@ -304,6 +304,21 @@ impl System {
             return Err(Error::TableExists(name.to_owned()));
         }
 
+        // Check constraint schemas
+        for constraint in &schema.constraints {
+            match constraint {
+                Constraint::PrimaryKey { .. } => {
+                    constraint.check(&[&schema])?;
+                }
+                Constraint::ForeignKey { ref_table, .. } => {
+                    self.open_table(ref_table)?;
+                    let schema0 = &schema;
+                    let schema1 = self.get_table(ref_table)?.get_schema().get_schema();
+                    constraint.check(&[schema0, schema1])?;
+                }
+            }
+        }
+
         fs::create_dir(table.clone())?;
 
         let data = table.join("data.bin");
@@ -318,7 +333,7 @@ impl System {
         let table_name = name;
 
         // Create indexes for constraints
-        for constraint in schema.constraints {
+        for constraint in &schema.constraints {
             match constraint {
                 Constraint::PrimaryKey { name, columns } => {
                     log::info!("Creating index for primary key {name:?}");
@@ -338,13 +353,14 @@ impl System {
                     columns,
                     ref_table,
                     ref_columns,
+                    ..
                 } => {
                     log::info!("Creating index for foreign key {name:?}");
                     let name = name.as_deref();
                     let columns: Vec<_> = columns.iter().map(|c| c.as_str()).collect();
                     self.add_index(
                         false,
-                        Some("fk_to"),
+                        Some("fk_referrer"),
                         table_name,
                         name,
                         columns.as_slice(),
@@ -353,14 +369,19 @@ impl System {
 
                     log::info!("Creating index for foreign key referenced table {ref_table:?}");
                     let ref_columns: Vec<_> = ref_columns.iter().map(|c| c.as_str()).collect();
+                    let prefix = format!("fk_referred.{}", table_name);
                     self.add_index(
                         false,
-                        Some("fk_from"),
-                        &ref_table,
+                        Some(&prefix),
+                        ref_table,
                         None,
                         ref_columns.as_slice(),
                         true,
                     )?;
+
+                    log::info!("Adding referred constraint to referenced table {ref_table:?}");
+                    let ref_table = self.get_table_mut(ref_table)?;
+                    ref_table.add_referred_constraint(table_name.to_owned(), constraint.clone());
                 }
             }
         }
@@ -371,6 +392,31 @@ impl System {
     /// Drop a table.
     pub fn drop_table(&mut self, name: &str) -> Result<()> {
         log::info!("Dropping table {}", name);
+
+        // Check foreign key.
+        self.open_table(name)?;
+        let table = self.get_table(name)?;
+        if !table.get_schema().get_referred_constraints().is_empty() {
+            let some_fk = &table.get_schema().get_referred_constraints()[0];
+            return Err(Error::TableReferencedByForeignKey(
+                some_fk.1.get_name().unwrap_or("<anonymous>").to_owned(),
+            ));
+        }
+
+        // Removed foreign keys to other tables.
+        let foreign_keys: Vec<_> = table
+            .get_schema()
+            .get_foreign_keys()
+            .into_iter()
+            .cloned()
+            .collect();
+        let mut fk_indexes = vec![];
+        for fk in foreign_keys {
+            let ref_table = fk.get_ref_table();
+            let ref_table = self.get_table_mut(ref_table)?;
+            ref_table.remove_referred_constraint(name);
+            fk_indexes.push((fk.get_ref_table().to_owned(), fk.get_index_name(false)));
+        }
 
         // Writing back dirty pages in the cache.
         if let Some(table) = self.tables.remove(name) {
@@ -398,6 +444,10 @@ impl System {
         }
 
         fs::remove_dir_all(table)?;
+
+        for (table_name, index_name) in fk_indexes {
+            self.drop_index(&table_name, &index_name)?;
+        }
 
         Ok(())
     }
@@ -451,7 +501,7 @@ impl System {
         selectors: &Selectors,
         tables: &[&str],
         where_clauses: Vec<WhereClause>,
-    ) -> Result<Vec<Record>> {
+    ) -> Result<Vec<SelectResult>> {
         log::info!("Executing select statement");
 
         match tables.len() {
@@ -504,7 +554,7 @@ impl System {
                     selectors,
                     where_clauses.as_slice(),
                 )? {
-                    ret.push(record);
+                    ret.push((record, page, slot));
                 }
                 if let Some(new_iter) = index.inc_iter(&mut fs, iter)? {
                     iter = new_iter;
@@ -523,7 +573,7 @@ impl System {
         selectors: &Selectors,
         tables: &[&str],
         where_clauses: Vec<WhereClause>,
-    ) -> Result<Vec<Record>> {
+    ) -> Result<Vec<SelectResult>> {
         log::info!("Executing join select statement");
 
         assert_eq!(tables.len(), 2);
@@ -664,7 +714,7 @@ impl System {
                     &Selectors::All,
                     outer_where_clauses.as_slice(),
                 )?;
-                for (outer_record, _) in block {
+                for (outer_record, _, _) in block {
                     // Query index
                     let join_cond = outer_record.fields[outer_cond_index].clone();
                     let key = Record::new(vec![join_cond]);
@@ -687,12 +737,16 @@ impl System {
                             &Selectors::All,
                             inner_where_clauses.as_slice(),
                         )? {
-                            ret.push(Record::select_tables(
-                                &[&outer_record, &inner_record],
-                                selectors,
-                                &schemas,
-                                &tables,
-                            )?);
+                            ret.push((
+                                Record::select_tables(
+                                    &[&outer_record, &inner_record],
+                                    selectors,
+                                    &schemas,
+                                    &tables,
+                                )?,
+                                page_id,
+                                slot,
+                            ));
                         }
 
                         // Increment iterator
@@ -717,7 +771,7 @@ impl System {
                     &Selectors::All,
                     outer_where_clauses.as_slice(),
                 )?;
-                for (outer_record, _) in block {
+                for (outer_record, _, _) in block {
                     let join_cond = outer_record.fields[outer_cond_index].clone();
 
                     inner_where_clauses.push(WhereClause::OperatorExpression(
@@ -728,13 +782,17 @@ impl System {
 
                     let inner_records =
                         inner_table.select(&mut fs, &Selectors::All, &inner_where_clauses)?;
-                    for inner_record in inner_records {
-                        ret.push(Record::select_tables(
-                            &[&outer_record, &inner_record],
-                            selectors,
-                            &schemas,
-                            &tables,
-                        )?);
+                    for (inner_record, page_id, slot) in inner_records {
+                        ret.push((
+                            Record::select_tables(
+                                &[&outer_record, &inner_record],
+                                selectors,
+                                &schemas,
+                                &tables,
+                            )?,
+                            page_id,
+                            slot,
+                        ));
                     }
 
                     inner_where_clauses.pop();
@@ -762,16 +820,15 @@ impl System {
             record.check(schema)?;
         }
 
-        let mut fs = FS.lock()?;
-
         for record in records {
             let table = self.get_table(table_name)?;
             let schema = table.get_schema();
+            let constraints = schema.get_constraints().to_owned();
 
-            // Check primary key.
-            for constraint in schema.get_constraints() {
+            // Check constraints.
+            for constraint in &constraints {
                 match constraint {
-                    Constraint::PrimaryKey { name, .. } => {
+                    Constraint::PrimaryKey { .. } => {
                         let index_name = constraint.get_index_name(false);
 
                         let index = self.get_index(table_name, &index_name)?;
@@ -780,20 +837,37 @@ impl System {
                         let selector = index.get_selector();
                         let key = record.select(&selector, table.get_schema());
 
+                        let mut fs = FS.lock()?;
                         if index.contains(&mut fs, &key)? {
-                            Err(Error::DuplicatePrimaryKey(
-                                name.clone().unwrap_or("<anonymous>".to_string()),
+                            Err(Error::DuplicateValue(constraint.get_display_name()))?;
+                        }
+                    }
+                    Constraint::ForeignKey { ref_table, .. } => {
+                        self.open_table(ref_table)?;
+                        self.open_indexes(ref_table)?;
+
+                        let index_name = constraint.get_index_name(true);
+                        let table = self.get_table(table_name)?;
+                        let index = self.get_index(table_name, &index_name)?;
+                        let selector = index.get_selector();
+                        let key = record.select(&selector, table.get_schema());
+
+                        let index_name = constraint.get_index_name(false);
+                        let index = self.get_index(ref_table, &index_name)?;
+
+                        log::info!("Checking fk: indexing {key:?} in {ref_table}");
+
+                        let mut fs = FS.lock()?;
+                        if !index.contains(&mut fs, &key)? {
+                            Err(Error::ReferencedFieldsNotExist(
+                                constraint.get_display_name(),
                             ))?;
                         }
                     }
-                    Constraint::ForeignKey {
-                        name,
-                        columns,
-                        ref_table,
-                        ref_columns,
-                    } => (),
                 }
             }
+
+            let mut fs = FS.lock()?;
 
             let table = self.get_table_mut(table_name)?;
             let (page_id, slot) = table.insert(&mut fs, record.clone())?;
@@ -832,11 +906,19 @@ impl System {
         log::info!("Executing update statement");
 
         let name = table;
+        let table_name = table;
 
         self.open_table(table)?;
         let table = self.get_table(table)?;
+        let mut set_columns = HashSet::new();
         for set_pair in set_pairs {
             set_pair.check(table.get_schema())?;
+            // Check duplicate column names.
+            if set_columns.contains(&set_pair.0) {
+                Err(Error::DuplicateColumn(set_pair.0.to_owned()))?;
+            } else {
+                set_columns.insert(set_pair.0.to_owned());
+            }
         }
         for where_clause in where_clauses {
             where_clause.check(table.get_schema())?
@@ -844,6 +926,205 @@ impl System {
 
         // Open all indexes of this table.
         let indexes = self.open_indexes(name)?;
+
+        let table = self.get_table(table_name)?;
+        let schema = table.get_schema();
+        let primary_key = schema.get_primary_key();
+        let foreign_keys = schema.get_foreign_keys();
+        let referred_constraints = schema.get_referred_constraints();
+
+        // Find out constraints that will be affected.
+        let primary_key = if let Some(primary_key) = primary_key {
+            if let Constraint::PrimaryKey { columns, .. } = primary_key {
+                if columns.iter().any(|column| set_columns.contains(column)) {
+                    Some(primary_key.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let foreign_keys = foreign_keys
+            .iter()
+            .filter(|fk| {
+                if let Constraint::ForeignKey { columns, .. } = fk {
+                    columns.iter().any(|column| set_columns.contains(column))
+                } else {
+                    false
+                }
+            })
+            .cloned()
+            .cloned()
+            .collect::<Vec<_>>();
+        let referred_constraints = referred_constraints
+            .iter()
+            .filter(|(_, fk)| {
+                if let Constraint::ForeignKey { ref_columns, .. } = fk {
+                    ref_columns.iter().any(|column| set_columns.contains(column))
+                } else {
+                    false
+                }
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        log::info!("Constraints affected by this update: {primary_key:?}, {foreign_keys:?}, {referred_constraints:?}");
+
+        // Check constraints.
+        if primary_key.is_some() || !foreign_keys.is_empty() || !referred_constraints.is_empty() {
+            log::info!("Checking constraints in update");
+
+            // Peek records to be updated.
+            let records = self.select(&Selectors::All, &[name], where_clauses.to_vec())?;
+
+            // Open table and indexes of constraints.
+            for fk in &foreign_keys {
+                let ref_table = fk.get_ref_table();
+
+                self.open_table(ref_table)?;
+                self.open_indexes(ref_table)?;
+            }
+
+            for (referrer, _) in &referred_constraints {
+                self.open_table(referrer)?;
+                self.open_indexes(referrer)?;
+            }
+
+            let mut fs = FS.lock()?;
+            let mut updated_count = 0;
+
+            for (record, page_id, slot) in &records {
+                let table = self.get_table(table_name)?;
+                let schema = table.get_schema();
+
+                let mut record_updated = record.clone();
+                let updated = record_updated.update(set_pairs, schema);
+
+                if !updated {
+                    continue;
+                }
+
+                // Check primary key constraint.
+                if let Some(primary_key) = &primary_key {
+                    log::info!("Checking primary key");
+
+                    let index_name = primary_key.get_index_name(true);
+
+                    let index = self.get_index(table_name, &index_name)?;
+                    let table = self.get_table(table_name)?;
+
+                    let selector = index.get_selector();
+                    let key = record.select(&selector, table.get_schema());
+                    let key_updated = record_updated.select(&selector, table.get_schema());
+
+                    // Key not updated
+                    if key == key_updated {
+                        continue;
+                    }
+
+                    log::info!("Checking pk: {key:?}");
+
+                    if index.contains(&mut fs, &key_updated)? {
+                        Err(Error::DuplicateValue(primary_key.get_display_name()))?;
+                    }
+                }
+
+                // Check foreign key constraints.
+                for fk in &foreign_keys {
+                    let ref_table = fk.get_ref_table();
+                    let index_name = fk.get_index_name(false);
+
+                    log::info!("Checking foreign key {}", &index_name);
+
+                    let index_name = fk.get_index_name(true);
+                    let table = self.get_table(table_name)?;
+                    let index = self.get_index(table_name, &index_name)?;
+                    let selector = index.get_selector();
+                    let key = record.select(&selector, table.get_schema());
+                    let key_updated = record_updated.select(&selector, table.get_schema());
+
+                    let index_name = fk.get_index_name(false);
+                    let index = self.get_index(ref_table, &index_name)?;
+
+                    log::info!("Key before update: {key:?}");
+                    log::info!("Key after update: {key_updated:?}");
+
+                    // Key not updated
+                    if key == key_updated {
+                        continue;
+                    }
+
+                    log::info!("Checking fk: indexing {key:?} in {ref_table}");
+
+                    if !index.contains(&mut fs, &key_updated)? {
+                        Err(Error::ReferencedFieldsNotExist(fk.get_display_name()))?;
+                    }
+                }
+
+                // Check referred foreign key constraints.
+                for (referrer, fk) in &referred_constraints {
+                    let index_name = fk.get_index_name(true);
+
+                    log::info!("Checking foreign key {}", &index_name);
+
+                    let index_name = fk.get_index_name(false);
+                    let table = self.get_table(table_name)?;
+                    let index = self.get_index(table_name, &index_name)?;
+                    let selector = index.get_selector();
+                    let key = record.select(&selector, table.get_schema());
+                    let key_updated = record_updated.select(&selector, table.get_schema());
+
+                    let index_name = fk.get_index_name(true);
+                    let index = self.get_index(referrer, &index_name)?;
+
+                    // Key not updated
+                    if key == key_updated {
+                        continue;
+                    }
+
+                    log::info!("Checking fk: indexing {key:?} in {referrer}");
+
+                    if index.contains(&mut fs, &key)? {
+                        Err(Error::RowReferencedByForeignKey(fk.get_display_name()))?;
+                    }
+                }
+
+                log::info!("Constraint check OK, perform update");
+
+                let table = self.get_table_mut(table_name)?;
+                if let Some((record_old, record_new)) =
+                    table.update_page_slot(&mut fs, *page_id, *slot, set_pairs, where_clauses)?
+                {
+                    updated_count += 1;
+
+                    // Update index
+                    for index_name in &indexes {
+                        let index = self.get_index(name, index_name)?;
+                        let table = self.get_table(name)?;
+
+                        let columns: Vec<_> = index
+                            .get_columns()
+                            .iter()
+                            .cloned()
+                            .map(|c| Selector::Column(ColumnSelector(None, c.name)))
+                            .collect();
+                        let selector = Selectors::Some(columns);
+
+                        let key_old = record_old.select(&selector, table.get_schema());
+                        let key_new = record_new.select(&selector, table.get_schema());
+
+                        let index = self.get_index_mut(name, index_name)?;
+                        index.remove(&mut fs, key_old, *page_id, *slot)?;
+                        index.insert(&mut fs, key_new, *page_id, *slot)?;
+                    }
+                }
+            }
+
+            return Ok(updated_count);
+        }
 
         let mut fs = FS.lock()?;
 
@@ -917,6 +1198,7 @@ impl System {
         log::info!("Executing delete statement");
 
         let name = table;
+        let table_name = table;
 
         self.open_table(table)?;
         let table = self.get_table(table)?;
@@ -927,6 +1209,47 @@ impl System {
 
         // Open all indexes of this table.
         let indexes = self.open_indexes(name)?;
+
+        let table = self.get_table(name)?;
+        let referred_constraints = table.get_schema().get_referred_constraints().to_owned();
+
+        // Open tables and indexes of referred constraints.
+        for (ref referrer, _) in referred_constraints {
+            self.open_table(referrer)?;
+            self.open_indexes(referrer)?;
+        }
+
+        let table = self.get_table(name)?;
+        let referred_constraints = table.get_schema().get_referred_constraints();
+
+        // Check foreign key constraints.
+        if !referred_constraints.is_empty() {
+            // Peek records to be deleted.
+            let records = self.select(&Selectors::All, &[name], where_clauses.to_vec())?;
+
+            let mut fs = FS.lock()?;
+
+            let table = self.get_table(name)?;
+            let referred_constraints = table.get_schema().get_referred_constraints();
+            for (referrer, fk) in referred_constraints {
+                if let Constraint::ForeignKey { .. } = fk {
+                    let index_name = fk.get_index_name(false);
+                    let index = self.get_index(table_name, &index_name)?;
+                    let selector = index.get_selector();
+
+                    let index_name = fk.get_index_name(true);
+                    let index = self.get_index(referrer, &index_name)?;
+
+                    for (record, _, _) in &records {
+                        let key = record.select(&selector, table.get_schema());
+
+                        if index.contains(&mut fs, &key)? {
+                            Err(Error::RowReferencedByForeignKey(fk.get_display_name()))?;
+                        }
+                    }
+                }
+            }
+        }
 
         let mut deleted = vec![];
 
@@ -1118,7 +1441,7 @@ impl System {
             let table = self.get_table(table_name)?;
             let keys = table.select_page(&mut fs, i, &selectors, &[])?;
             let index = self.get_index_mut(table_name, index_name)?;
-            for (key, slot) in keys {
+            for (key, _, slot) in keys {
                 index.insert(&mut fs, key, i, slot)?;
             }
         }
@@ -1208,7 +1531,10 @@ impl System {
 
         let schema = table.get_schema();
         if !schema.has_index(index_name) {
-            return Err(Error::IndexNotFound(index_name.to_owned()));
+            return Err(Error::IndexNotFound(
+                index_name.to_owned(),
+                table_name.to_owned(),
+            ));
         }
 
         let db = self.db.as_ref().ok_or(Error::NoDatabaseSelected)?;
@@ -1285,7 +1611,7 @@ impl System {
 
             let mut failed = false;
             let index = self.get_index_mut(table_name, &index_name)?;
-            for (key, slot) in keys {
+            for (key, _, slot) in keys {
                 log::info!("Checking primary key {key:?}");
                 if index.contains(&mut fs, &key)? {
                     failed = true;
@@ -1298,7 +1624,7 @@ impl System {
             if failed {
                 drop(fs);
                 self.drop_index(table_name, &index_name)?;
-                return Err(Error::DuplicatePrimaryKey(
+                return Err(Error::DuplicateValue(
                     constraint_name.unwrap_or("<anonymous>").to_string(),
                 ));
             }
@@ -1311,7 +1637,11 @@ impl System {
     }
 
     /// Execute drop primary key statement.
-    pub fn drop_primary_key(&mut self, table_name: &str, constraint_name: Option<&str>) -> Result<()> {
+    pub fn drop_primary_key(
+        &mut self,
+        table_name: &str,
+        constraint_name: Option<&str>,
+    ) -> Result<()> {
         log::info!("Executing drop primary key statement");
 
         self.open_table(table_name)?;

@@ -17,7 +17,7 @@ use crate::record::Record;
 use crate::record::RecordSchema;
 
 /// A type of a column.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub enum Type {
     Int,
     Float,
@@ -159,12 +159,83 @@ pub enum Constraint {
     ForeignKey {
         name: Option<String>,
         columns: Vec<String>,
+        referrer: String,
         ref_table: String,
         ref_columns: Vec<String>,
     },
 }
 
 impl Constraint {
+    /// Check the constraint against some table schemas.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the number of schemas are incorrect.
+    pub fn check(&self, schemas: &[&Schema]) -> Result<()> {
+        match self {
+            Self::PrimaryKey { columns, .. } => {
+                let schema = schemas[0];
+                for column in columns {
+                    if !schema.has_column(column) {
+                        return Err(Error::ColumnNotFound(column.clone()));
+                    }
+                }
+            }
+            Self::ForeignKey {
+                columns,
+                ref_columns,
+                ..
+            } => {
+                if columns.len() != ref_columns.len() {
+                    return Err(Error::FieldCountMismatch(columns.len(), ref_columns.len()));
+                }
+
+                let schema0 = schemas[0];
+                let schema1 = schemas[1];
+
+                for (column0, column1) in columns.iter().zip(ref_columns) {
+                    if !schema0.has_column(column0) {
+                        return Err(Error::ColumnNotFound(column0.clone()));
+                    }
+                    if !schema1.has_column(column1) {
+                        return Err(Error::ColumnNotFound(column1.clone()));
+                    }
+                    let column0 = schema0.get_column(column0);
+                    let column1 = schema1.get_column(column1);
+                    if column0.typ != column1.typ {
+                        return Err(Error::ForeignKeyTypeMismatch);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Get the name of this constraint.
+    pub fn get_name(&self) -> Option<&str> {
+        match self {
+            Self::PrimaryKey { name, .. } => name.as_deref(),
+            Self::ForeignKey { name, .. } => name.as_deref(),
+        }
+    }
+
+    /// Get the display name of this constraint.
+    pub fn get_display_name(&self) -> String {
+        self.get_name().unwrap_or("<anonymous>").to_owned()
+    }
+
+    /// Get the referenced table name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the constraint is not a foreign key.
+    pub fn get_ref_table(&self) -> &str {
+        match self {
+            Self::ForeignKey { ref_table, .. } => ref_table,
+            _ => panic!("Constraint is not a foreign key"),
+        }
+    }
+
     /// Get the index name of this constraint.
     ///
     /// # Parameters
@@ -183,7 +254,34 @@ impl Constraint {
                         }
                     )
             }
-            _ => todo!(),
+            Self::ForeignKey {
+                name,
+                columns,
+                referrer: referrer_table,
+                ref_columns,
+                ..
+            } => {
+                let referrer_name = &format!("fk_referred.{referrer_table}");
+                String::from(if referrer {
+                    "fk_referrer"
+                } else {
+                    referrer_name
+                }) + &format!(
+                    ".{}.implicit",
+                    if let Some(name) = name {
+                        name.to_owned()
+                    } else {
+                        format!(
+                            "annoy.{}",
+                            if referrer {
+                                columns.join("_")
+                            } else {
+                                ref_columns.join("_")
+                            }
+                        )
+                    }
+                )
+            }
         }
     }
 }
@@ -203,6 +301,7 @@ impl Display for Constraint {
                 columns,
                 ref_table,
                 ref_columns,
+                ..
             } => {
                 write!(f, "FOREIGN KEY ")?;
                 if let Some(name) = name {
@@ -453,8 +552,29 @@ pub struct Schema {
     pub columns: Vec<Column>,
     /// Constraints on the table.
     pub constraints: Vec<Constraint>,
+    /// Referred constraints.
+    pub referred_constraints: Vec<(String, Constraint)>,
     /// Indexes on the table.
     pub indexes: Vec<IndexSchema>,
+}
+
+impl Schema {
+    /// Check if some column name is in the table.
+    pub fn has_column(&self, name: &str) -> bool {
+        self.columns.iter().any(|c| c.name == name)
+    }
+
+    /// Get a column in this schema by its name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the column is not found.
+    pub fn get_column(&self, name: &str) -> &Column {
+        self.columns
+            .iter()
+            .find(|c| c.name == name)
+            .expect("Column not found")
+    }
 }
 
 /// A wrapped table schema.
@@ -510,8 +630,6 @@ impl TableSchema {
         }
         log::info!("Max records {max_records} with {free_bitmap_size} bytes free bitmap");
 
-        let constraints = schema.constraints.clone();
-
         Ok(Self {
             schema,
             path: path.to_owned(),
@@ -533,6 +651,11 @@ impl TableSchema {
         Ok(())
     }
 
+    /// Get the inner schema.
+    pub fn get_schema(&self) -> &Schema {
+        &self.schema
+    }
+
     /// Get the length of a record.
     pub fn get_record_size(&self) -> usize {
         self.record_size
@@ -546,6 +669,11 @@ impl TableSchema {
     /// Return a reference to table constraints.
     pub fn get_constraints(&self) -> &[Constraint] {
         &self.schema.constraints
+    }
+
+    /// Return a reference to referred table constraints.
+    pub fn get_referred_constraints(&self) -> &[(String, Constraint)] {
+        &self.schema.referred_constraints
     }
 
     /// Return a reference to table indexes.
@@ -572,10 +700,19 @@ impl TableSchema {
 
     /// Get the primary key in the table.
     pub fn get_primary_key(&self) -> Option<&Constraint> {
-        self.schema.constraints.iter().find_map(|c| match c {
-            Constraint::PrimaryKey { .. } => Some(c),
-            _ => None,
-        })
+        self.schema
+            .constraints
+            .iter()
+            .find(|c| matches!(c, Constraint::PrimaryKey { .. }))
+    }
+
+    /// Get the foreign keys in the table.
+    pub fn get_foreign_keys(&self) -> Vec<&Constraint> {
+        self.schema
+            .constraints
+            .iter()
+            .filter(|c| matches!(c, Constraint::ForeignKey { .. }))
+            .collect()
     }
 
     /// Add an constraint to the table.
@@ -583,13 +720,22 @@ impl TableSchema {
         self.schema.constraints.push(constraint);
     }
 
+    /// Add an referred constraint to the table.
+    pub fn add_referred_constraint(&mut self, table: String, constraint: Constraint) {
+        self.schema.referred_constraints.push((table, constraint));
+    }
+
+    /// Remove referred constraints from a table.
+    pub fn remove_referred_constraints(&mut self, table: &str) {
+        self.schema.referred_constraints.retain(|(t, _)| t != table);
+    }
+
     /// Remove the primary key on the table.
     pub fn remove_primary_key(&mut self) {
         log::info!("Dropping primary key");
-        self.schema.constraints.retain(|c| match c {
-            Constraint::PrimaryKey { .. } => false,
-            _ => true,
-        })
+        self.schema
+            .constraints
+            .retain(|c| !matches!(c, Constraint::PrimaryKey { .. }))
     }
 
     /// Remove an constraint from the table.
@@ -599,6 +745,25 @@ impl TableSchema {
         self.schema.constraints.retain(|c| match c {
             Constraint::PrimaryKey { name: n, .. } => n.as_deref() != Some(name),
             Constraint::ForeignKey { name: n, .. } => n.as_deref() != Some(name),
+        });
+    }
+
+    /// Remove an referred constraint from the table.
+    pub fn remove_referred_constraint(&mut self, table_name: &str, name: &str) {
+        log::info!("Dropping constraint {name}");
+        log::info!(
+            "Current constraints: {:?}",
+            self.schema.referred_constraints
+        );
+        self.schema.referred_constraints.retain(|(t, c)| {
+            // Not the table we want to remove
+            if t != table_name {
+                return true;
+            }
+            match c {
+                Constraint::PrimaryKey { name: n, .. } => n.as_deref() != Some(name),
+                Constraint::ForeignKey { name: n, .. } => n.as_deref() != Some(name),
+            }
         });
     }
 

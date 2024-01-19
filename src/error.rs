@@ -35,8 +35,8 @@ pub enum Error {
     ColumnNotFound(String),
     #[error("Inexact column name `{0}`")]
     InexactColumn(String),
-    #[error("Index `{0}` not found")]
-    IndexNotFound(String),
+    #[error("Index `{0}` on table `{1}` not found")]
+    IndexNotFound(String, String),
 
     #[error("Duplicate column name `{0}`")]
     DuplicateColumn(String),
@@ -54,8 +54,18 @@ pub enum Error {
     #[error("Field `{0}` must not be nullable")]
     NotNullable(String),
 
-    #[error("Constraint failed: duplicate values `{0}`")]
-    DuplicatePrimaryKey(String),
+    #[error("Constraint failed: types of foreign keys mismatch")]
+    ForeignKeyTypeMismatch,
+    #[error("Constraint failed: duplicate value `{0}`")]
+    DuplicateValue(String),
+    #[error("Constraint failed: columns referenced by foreign key must be primary key")]
+    ReferencedColumnsNotPrimaryKey,
+    #[error("Constraint failed: fields referenced by foreign key `{0}` not exist")]
+    ReferencedFieldsNotExist(String),
+    #[error("Constraint failed: cannot update or delete row due to foreign key `{0}`")]
+    RowReferencedByForeignKey(String),
+    #[error("Constraint failed: cannot drop table due to foreign key `{0}`")]
+    TableReferencedByForeignKey(String),
 
     #[error("There should be exactly one join condition")]
     JoinConditionCount,
