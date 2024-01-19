@@ -10,6 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use chrono::NaiveDate;
 use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +26,7 @@ pub enum Type {
     Int,
     Float,
     Varchar(usize),
+    Date,
 }
 
 impl Type {
@@ -34,6 +36,7 @@ impl Type {
             Type::Int => 4,
             Type::Float => 8,
             Type::Varchar(len) => *len,
+            Type::Date => 10,
         }
     }
 }
@@ -44,6 +47,7 @@ impl Display for Type {
             Type::Int => write!(f, "INT"),
             Type::Float => write!(f, "FLOAT"),
             Type::Varchar(len) => write!(f, "VARCHAR({})", len),
+            Type::Date => write!(f, "DATE"),
         }
     }
 }
@@ -55,6 +59,7 @@ pub enum Value {
     Int(i32),
     Float(f64),
     Varchar(String),
+    Date(NaiveDate),
 }
 
 impl PartialEq for Value {
@@ -66,6 +71,10 @@ impl PartialEq for Value {
             (Value::Varchar(a), Value::Varchar(b)) => {
                 a.trim_end_matches('\0') == b.trim_end_matches('\0')
             }
+            (Value::Date(a), Value::Date(b)) => a == b,
+            // Weak type: string ang date
+            (Value::Varchar(a), Value::Date(b)) => a.trim_end_matches('\0') == b.to_string(),
+            (Value::Date(a), Value::Varchar(b)) => a.to_string() == b.trim_end_matches('\0'),
             _ => false,
         }
     }
@@ -78,6 +87,7 @@ impl Hash for Value {
             Value::Int(v) => v.hash(state),
             Value::Float(v) => v.to_bits().hash(state),
             Value::Varchar(v) => v.trim_end_matches('\0').hash(state),
+            Value::Date(v) => v.hash(state),
         }
     }
 }
@@ -93,6 +103,15 @@ impl PartialOrd for Value {
             (Value::Varchar(a), Value::Varchar(b)) => a
                 .trim_end_matches('\0')
                 .partial_cmp(b.trim_end_matches('\0')),
+            (Value::Date(a), Value::Date(b)) => a.partial_cmp(b),
+            // Weak type: string ang date
+            (Value::Varchar(a), Value::Date(b)) => {
+                a.trim_end_matches('\0').partial_cmp(&b.to_string())
+            }
+            (Value::Date(a), Value::Varchar(b)) => a
+                .to_string()
+                .as_str()
+                .partial_cmp(b.trim_end_matches('\0')),
             _ => None,
         }
     }
@@ -105,6 +124,7 @@ impl Value {
             Type::Int => Ok(Value::Int(s.parse()?)),
             Type::Float => Ok(Value::Float(s.parse()?)),
             Type::Varchar(_) => Ok(Value::Varchar(s.to_owned())),
+            Type::Date => Ok(Value::Date(s.parse()?)),
         }
     }
 
@@ -115,7 +135,11 @@ impl Value {
             (Value::Null, _)
                 | (Value::Int(_), Type::Int)
                 | (Value::Float(_), Type::Float)
-                | (Value::Varchar(_), Type::Varchar(_))
+                | (Value::Date(_), Type::Date)
+        ) || matches!(
+            (self, typ), (Value::Varchar(a), Type::Varchar(len)) if a.len() <= *len
+        ) || matches!(
+            (self, typ), (Value::Varchar(a) , Type::Date) if a.parse::<NaiveDate>().is_ok()
         )
     }
 
@@ -212,6 +236,7 @@ impl Display for Value {
             Value::Int(v) => write!(f, "{v}"),
             Value::Float(v) => write!(f, "{v:.2}"),
             Value::Varchar(v) => write!(f, "{}", v.trim_end_matches('\0')),
+            Value::Date(v) => write!(f, "{}", v),
         }
     }
 }

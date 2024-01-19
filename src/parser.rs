@@ -268,6 +268,9 @@ fn parse_column(pairs: Pairs<Rule>) -> Result<Column> {
                         let size = size.unwrap();
                         typ = Some(Type::Varchar(size));
                     }
+                    Rule::date_t => {
+                        typ = Some(Type::Date);
+                    }
                     _ => panic!("Invalid type: {pair:?}"),
                 }
             }

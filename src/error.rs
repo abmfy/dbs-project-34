@@ -5,6 +5,7 @@ use std::num::{ParseFloatError, ParseIntError};
 use std::result;
 use std::sync::{MutexGuard, PoisonError};
 
+use chrono::format::ParseError as ChronoParseError;
 use csv::Error as CsvError;
 use pest::error::Error as PestError;
 use regex::Error as RegexError;
@@ -79,6 +80,8 @@ pub enum Error {
     #[error("Aggregation query mixed with non-aggregation query")]
     MixedAggregate,
 
+    #[error("Date parse error: {0}")]
+    ChronoParse(#[from] ChronoParseError),
     #[error("CSV error: {0}")]
     Csv(#[from] CsvError),
     #[error("IO error: {0}")]

@@ -103,10 +103,11 @@ foreign_key = { "FOREIGN" ~ "KEY" ~ (identifier)? ~ "(" ~ identifiers ~ ")" ~ "R
 
 references_clause = { identifier ~ "(" ~ identifiers ~ ")" }
 
-typ = { int_t | float_t | varchar_t }
+typ = { int_t | float_t | varchar_t | date_t }
 int_t = { "INT" }
 float_t = { "FLOAT" }
 varchar_t = { "VARCHAR" ~ "(" ~ integer ~ ")" }
+date_t = { "DATE" }
 
 order = { asc | desc }
 asc = { "ASC" }

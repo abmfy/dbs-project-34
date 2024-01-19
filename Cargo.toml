@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 bit-set = "0.5.3"
+chrono = { version = "0.4.31", features = ["serde"] }
 clap = { version = "4.4.14", features = ["derive"] }
 console = "0.15.8"
 csv = "1.3.0"

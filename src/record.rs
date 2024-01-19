@@ -202,6 +202,10 @@ impl Record {
                     let s = String::from_utf8_lossy(value_buf).to_string();
                     Value::Varchar(s)
                 }
+                Type::Date => {
+                    let s = String::from_utf8_lossy(value_buf).to_string();
+                    Value::Date(s.parse().expect("Date parse error"))
+                }
             };
 
             fields.push(value);
@@ -237,6 +241,9 @@ impl Record {
                     // Fill the rest with zeros
                     value_buf[..v.len()].copy_from_slice(v.as_bytes());
                     value_buf[v.len()..].fill(0);
+                }
+                Value::Date(v) => {
+                    value_buf.copy_from_slice(v.to_string().as_bytes());
                 }
             }
 
