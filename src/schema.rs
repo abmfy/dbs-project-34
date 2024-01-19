@@ -668,6 +668,9 @@ impl SetPair {
             return Err(Error::ColumnNotFound(column.to_owned()));
         }
         let column = schema.get_column(column);
+        if !column.nullable && matches!(value, Value::Null) {
+            return Err(Error::NotNullable(column.name.clone()));
+        }
         let typ = &column.typ;
         if !value.check_type(typ) {
             return Err(Error::TypeMismatch(value.clone(), typ.clone()));
@@ -699,6 +702,7 @@ pub enum Expression {
 pub enum WhereClause {
     OperatorExpression(ColumnSelector, Operator, Expression),
     LikeString(ColumnSelector, String),
+    IsNull(ColumnSelector, bool)
 }
 
 impl WhereClause {
@@ -725,6 +729,12 @@ impl WhereClause {
                 }
                 Ok(())
             }
+            WhereClause::IsNull(ColumnSelector(_, column), _) => {
+                if !schema.has_column(column) {
+                    return Err(Error::ColumnNotFound(column.clone()));
+                }
+                Ok(())
+            }
         }
     }
 
@@ -745,6 +755,9 @@ impl WhereClause {
                 }
             }
             WhereClause::LikeString(column_selector, _) => {
+                column_selector.check_tables(schemas, tables)
+            }
+            WhereClause::IsNull(column_selector, _) => {
                 column_selector.check_tables(schemas, tables)
             }
         }
@@ -788,6 +801,15 @@ impl WhereClause {
                     re.is_match(v)
                 } else {
                     false
+                }
+            }
+            WhereClause::IsNull(ColumnSelector(_, column), is_null) => {
+                let column = schema.get_column(column);
+                let value = &record.fields[schema.column_map[&column.name]];
+                if *is_null {
+                    matches!(value, Value::Null)
+                } else {
+                    !matches!(value, Value::Null)
                 }
             }
         }

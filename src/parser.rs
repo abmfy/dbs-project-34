@@ -790,6 +790,31 @@ fn parse_where_like_string(pairs: Pairs<Rule>) -> Result<WhereClause> {
     Ok(WhereClause::LikeString(column, string))
 }
 
+fn parse_where_null_clause(pairs: Pairs<Rule>) -> Result<WhereClause> {
+    let mut column = None;
+    let mut is_null = None;
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::column => {
+                column = Some(parse_column_selector(pair.into_inner())?);
+            }
+            Rule::null_clause => {
+                is_null = Some(true);
+            }
+            Rule::not_null_clause => {
+                is_null = Some(false);
+            }
+            _ => continue,
+        }
+    }
+
+    let column = column.unwrap();
+    let is_null = is_null.unwrap();
+
+    Ok(WhereClause::IsNull(column, is_null))
+}
+
 fn parse_where_clause(pairs: Pairs<Rule>) -> Result<WhereClause> {
     let mut ret = None;
 
@@ -800,6 +825,9 @@ fn parse_where_clause(pairs: Pairs<Rule>) -> Result<WhereClause> {
             }
             Rule::where_like_string => {
                 ret = Some(parse_where_like_string(pair.into_inner())?);
+            }
+            Rule::where_null => {
+                ret = Some(parse_where_null_clause(pair.into_inner())?);
             }
             _ => continue,
         }

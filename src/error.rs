@@ -55,7 +55,7 @@ pub enum Error {
     FieldCountMismatch(usize, usize),
     #[error("Value `{0}` does not match type `{1}`")]
     TypeMismatch(Value, Type),
-    #[error("Field `{0}` must not be nullable")]
+    #[error("Field `{0}` must not be null")]
     NotNullable(String),
 
     #[error("Constraint failed: types of foreign keys mismatch")]

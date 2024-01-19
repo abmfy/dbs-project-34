@@ -105,6 +105,11 @@ impl Record {
         }
     }
 
+    /// Check whether there are null values in this record.
+    pub fn has_null(&self) -> bool {
+        self.fields.iter().any(|v| v == &Value::Null)
+    }
+
     /// Get the child field for internal index record.
     ///
     /// # Panics

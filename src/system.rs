@@ -908,6 +908,9 @@ impl System {
                     WhereClause::LikeString(ColumnSelector(table_selector, _), _) => {
                         table_selector.as_ref().unwrap() == table_name
                     }
+                    WhereClause::IsNull(ColumnSelector(table_selector, _), _) => {
+                        table_selector.as_ref().unwrap() == table_name
+                    }
                 })
                 .cloned()
                 .collect()
@@ -1073,6 +1076,11 @@ impl System {
                         let index = self.get_index(table_name, &index_name)?;
                         let selector = index.get_selector();
                         let key = record.select(&selector, table.get_schema());
+
+                        // Skip checks for null
+                        if key.has_null() {
+                            continue;
+                        }
 
                         let index_name = constraint.get_index_name(false);
                         let index = self.get_index(ref_table, &index_name)?;
@@ -1279,6 +1287,11 @@ impl System {
 
                     // Key not updated
                     if key == key_updated {
+                        continue;
+                    }
+
+                    // Skip checks for null
+                    if key_updated.has_null() {
                         continue;
                     }
 
