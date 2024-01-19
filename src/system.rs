@@ -509,19 +509,16 @@ impl System {
         let mut group_by_index = None;
 
         for (i, selector) in selectors.iter().enumerate() {
-            match selector {
-                Selector::Column(c) => {
-                    if c == group_by {
-                        group_by_index = Some(i);
-                    }
+            if let Selector::Column(c) = selector {
+                if c == group_by {
+                    group_by_index = Some(i);
                 }
-                _ => (),
-            }
+            };
         }
 
         for (record, page, slot) in results {
             let group_by_value = record.fields[group_by_index.unwrap()].clone();
-            let group = group.entry(group_by_value).or_insert_with(|| vec![]);
+            let group = group.entry(group_by_value).or_insert_with(Vec::new);
             group.push((record, page, slot));
         }
 
@@ -575,6 +572,45 @@ impl System {
         ret
     }
 
+    /// Perform ordering on some query results.
+    ///
+    /// # Parameters
+    ///
+    /// - `extra`: whether to remove extra columns added for sorting.
+    pub fn order(
+        &self,
+        order_index: usize,
+        results: Vec<SelectResult>,
+        order_by: ColumnSelector,
+        asc: bool,
+        extra: bool,
+    ) -> Vec<SelectResult> {
+        log::info!("Ordering on {order_by:?}");
+
+        let mut ret = results;
+        ret.sort_by(|a, b| {
+            let a = &a.0.fields[order_index];
+            let b = &b.0.fields[order_index];
+            // Use string comparison as a fallback
+            if asc {
+                a.partial_cmp(b)
+                    .unwrap_or(a.to_string().cmp(&b.to_string()))
+            } else {
+                b.partial_cmp(a)
+                    .unwrap_or(b.to_string().cmp(&a.to_string()))
+            }
+        });
+
+        if extra {
+            // Remove the added order column
+            for (record, _, _) in &mut ret {
+                record.fields.pop();
+            }
+        }
+
+        ret
+    }
+
     /// Execute select statement.
     pub fn select(
         &mut self,
@@ -582,6 +618,7 @@ impl System {
         tables: &[&str],
         where_clauses: Vec<WhereClause>,
         group_by: Option<ColumnSelector>,
+        order_by: Option<(ColumnSelector, bool)>,
     ) -> Result<Vec<SelectResult>> {
         log::info!("Executing select statement");
 
@@ -597,6 +634,19 @@ impl System {
             }
         } else {
             selectors.clone()
+        };
+        // Add order as last column
+        let selectors = if let Some((order_by, _)) = &order_by {
+            match selectors {
+                Selectors::All => Selectors::All,
+                Selectors::Some(selectors) => {
+                    let mut selectors = selectors.clone();
+                    selectors.push(Selector::Column(order_by.clone()));
+                    Selectors::Some(selectors)
+                }
+            }
+        } else {
+            selectors
         };
         let selectors = &selectors;
 
@@ -660,6 +710,51 @@ impl System {
             }
             2 => self.join_select(selectors, tables, where_clauses)?,
             _ => return Err(Error::NotImplemented("Join on multiple tables")),
+        };
+
+        // Perform order
+        let ret = if let Some((order_by, asc)) = order_by {
+            let (order_index, extra) = match selectors {
+                Selectors::All => {
+                    if tables.len() == 1 {
+                        let table = self.get_table(tables[0])?;
+                        if !table.get_schema().has_column(&order_by.1) {
+                            return Err(Error::ColumnNotFound(order_by.1.to_owned()));
+                        }
+                        let order_index = table.get_schema().get_column_index(&order_by.1);
+                        (order_index, false)
+                    } else {
+                        if order_by.0.is_none() {
+                            return Err(Error::InexactColumn(order_by.1.to_owned()));
+                        }
+                        let ColumnSelector(table, column) = &order_by;
+                        let table = table.as_deref().unwrap();
+
+                        let mut order_index = 0;
+
+                        for t in tables {
+                            if t == &table {
+                                let table = self.get_table(t)?;
+                                if !table.get_schema().has_column(column) {
+                                    return Err(Error::ColumnNotFound(column.to_owned()));
+                                }
+                                order_index += table.get_schema().get_column_index(column);
+                                break;
+                            } else {
+                                let table = self.get_table(t)?;
+                                order_index += table.get_schema().get_columns().len();
+                            }
+                        }
+
+                        (order_index, false)
+                    }
+                }
+                Selectors::Some(columns) => (columns.len() - 1, true),
+            };
+
+            self.order(order_index, ret, order_by, asc, extra)
+        } else {
+            ret
         };
 
         // Perform aggregation
@@ -1107,7 +1202,8 @@ impl System {
             log::info!("Checking constraints in update");
 
             // Peek records to be updated.
-            let records = self.select(&Selectors::All, &[name], where_clauses.to_vec(), None)?;
+            let records =
+                self.select(&Selectors::All, &[name], where_clauses.to_vec(), None, None)?;
 
             // Open table and indexes of constraints.
             for fk in &foreign_keys {
@@ -1354,7 +1450,8 @@ impl System {
         // Check foreign key constraints.
         if !referred_constraints.is_empty() {
             // Peek records to be deleted.
-            let records = self.select(&Selectors::All, &[name], where_clauses.to_vec(), None)?;
+            let records =
+                self.select(&Selectors::All, &[name], where_clauses.to_vec(), None, None)?;
 
             let mut fs = FS.lock()?;
 
@@ -1460,46 +1557,43 @@ impl System {
 
         let mut known_columns: HashSet<String> = Default::default();
         for where_clause in where_clauses {
-            match where_clause {
-                WhereClause::OperatorExpression(column, operator, expression) => {
-                    match expression {
-                        Expression::Column(_) => return Ok(None),
-                        Expression::Value(v) => {
-                            let column_name = column.1.clone();
-                            // Only index on int supported yet
-                            if let Value::Int(value) = v {
-                                match operator {
-                                    Operator::Eq => {
-                                        known_columns.insert(column_name.clone());
-                                        left.entry(column_name.clone()).or_default().push(*value);
-                                        right.entry(column_name).or_default().push(*value);
-                                    }
-                                    Operator::Ne => {
-                                        // Ne is ignored
-                                    }
-                                    Operator::Lt => {
-                                        known_columns.insert(column_name.clone());
-                                        right.entry(column_name).or_default().push(*value - 1);
-                                    }
-                                    Operator::Le => {
-                                        known_columns.insert(column_name.clone());
-                                        right.entry(column_name).or_default().push(*value);
-                                    }
-                                    Operator::Gt => {
-                                        known_columns.insert(column_name.clone());
-                                        left.entry(column_name).or_default().push(*value + 1);
-                                    }
-                                    Operator::Ge => {
-                                        known_columns.insert(column_name.clone());
-                                        left.entry(column_name).or_default().push(*value);
-                                    }
+            if let WhereClause::OperatorExpression(column, operator, expression) = where_clause {
+                match expression {
+                    Expression::Column(_) => return Ok(None),
+                    Expression::Value(v) => {
+                        let column_name = column.1.clone();
+                        // Only index on int supported yet
+                        if let Value::Int(value) = v {
+                            match operator {
+                                Operator::Eq => {
+                                    known_columns.insert(column_name.clone());
+                                    left.entry(column_name.clone()).or_default().push(*value);
+                                    right.entry(column_name).or_default().push(*value);
+                                }
+                                Operator::Ne => {
+                                    // Ne is ignored
+                                }
+                                Operator::Lt => {
+                                    known_columns.insert(column_name.clone());
+                                    right.entry(column_name).or_default().push(*value - 1);
+                                }
+                                Operator::Le => {
+                                    known_columns.insert(column_name.clone());
+                                    right.entry(column_name).or_default().push(*value);
+                                }
+                                Operator::Gt => {
+                                    known_columns.insert(column_name.clone());
+                                    left.entry(column_name).or_default().push(*value + 1);
+                                }
+                                Operator::Ge => {
+                                    known_columns.insert(column_name.clone());
+                                    left.entry(column_name).or_default().push(*value);
                                 }
                             }
                         }
                     }
                 }
-                _ => (),
-            }
+            };
         }
 
         if known_columns.is_empty() {

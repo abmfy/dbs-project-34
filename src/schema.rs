@@ -760,7 +760,7 @@ impl WhereClause {
                         .multi_line(true)
                         .build()
                         .expect("Failed to build regex");
-                    re.is_match(&v)
+                    re.is_match(v)
                 } else {
                     false
                 }

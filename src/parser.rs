@@ -831,6 +831,36 @@ fn parse_group_by_clause(pairs: Pairs<Rule>) -> Result<ColumnSelector> {
     ret.unwrap()
 }
 
+fn parse_order_by_clause(pairs: Pairs<Rule>) -> Result<(ColumnSelector, bool)> {
+    let mut column = None;
+    let mut asc = true;
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::column => {
+                column = Some(parse_column_selector(pair.into_inner())?);
+            }
+            Rule::order => {
+                for pair in pair.into_inner() {
+                    match pair.as_rule() {
+                        Rule::asc => {
+                            asc = true;
+                        }
+                        Rule::desc => {
+                            asc = false;
+                        }
+                        _ => continue,
+                    }
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    let column = column.unwrap();
+    Ok((column, asc))
+}
+
 fn parse_select_statement(
     system: &mut System,
     statement: Pairs<Rule>,
@@ -841,6 +871,7 @@ fn parse_select_statement(
     let mut tables = None;
     let mut where_clauses = vec![];
     let mut group_by_clause = None;
+    let mut order_by_clause = None;
 
     for pair in statement {
         match pair.as_rule() {
@@ -855,6 +886,9 @@ fn parse_select_statement(
             }
             Rule::group_by_clause => {
                 group_by_clause = Some(parse_group_by_clause(pair.into_inner())?);
+            }
+            Rule::order_by_clause => {
+                order_by_clause = Some(parse_order_by_clause(pair.into_inner())?);
             }
             _ => continue,
         }
@@ -879,7 +913,13 @@ fn parse_select_statement(
 
     ret.set_titles(Row::from(columns));
 
-    let results = system.select(&selectors, &tables, where_clauses, group_by_clause)?;
+    let results = system.select(
+        &selectors,
+        &tables,
+        where_clauses,
+        group_by_clause,
+        order_by_clause,
+    )?;
     let len = results.len();
 
     for (record, _, _) in results {
