@@ -600,66 +600,66 @@ impl System {
         };
         let selectors = &selectors;
 
-        match tables.len() {
+        let ret = match tables.len() {
             0 => unreachable!(),
-            1 => (),
-            2 => return self.join_select(selectors, tables, where_clauses),
-            _ => return Err(Error::NotImplemented("Join on multiple tables")),
-        }
+            1 => {
+                assert_eq!(tables.len(), 1);
 
-        assert_eq!(tables.len(), 1);
+                let table_name = tables[0];
+                self.open_table(tables[0])?;
+                let table = self.get_table(tables[0])?;
 
-        let table_name = tables[0];
-        self.open_table(tables[0])?;
-        let table = self.get_table(tables[0])?;
-
-        selectors.check(table.get_schema())?;
-        for where_clause in &where_clauses {
-            where_clause.check(table.get_schema())?
-        }
-
-        // Open all indexes of this table.
-        self.open_indexes(table_name)?;
-
-        let table = self.get_table(table_name)?;
-
-        let mut fs = FS.lock()?;
-
-        // Check index availability
-        let index = self.match_index(&mut fs, tables[0], where_clauses.as_slice())?;
-        let ret = if let Some((index_name, left_iter, right_key)) = index {
-            log::info!("Using index {index_name}");
-
-            // Use index
-            let mut iter = left_iter;
-
-            let mut ret = vec![];
-
-            loop {
-                let index = self.get_index(table_name, &index_name)?;
-                let (record, page, slot) = index.get_record(&mut fs, iter)?;
-                // Iteration ended
-                if record > right_key {
-                    break ret;
+                selectors.check(table.get_schema())?;
+                for where_clause in &where_clauses {
+                    where_clause.check(table.get_schema())?
                 }
+
+                // Open all indexes of this table.
+                self.open_indexes(table_name)?;
+
                 let table = self.get_table(table_name)?;
-                if let Some(record) = table.select_page_slot(
-                    &mut fs,
-                    page,
-                    slot,
-                    selectors,
-                    where_clauses.as_slice(),
-                )? {
-                    ret.push((record, page, slot));
-                }
-                if let Some(new_iter) = index.inc_iter(&mut fs, iter)? {
-                    iter = new_iter;
+
+                let mut fs = FS.lock()?;
+
+                // Check index availability
+                let index = self.match_index(&mut fs, tables[0], where_clauses.as_slice())?;
+                if let Some((index_name, left_iter, right_key)) = index {
+                    log::info!("Using index {index_name}");
+
+                    // Use index
+                    let mut iter = left_iter;
+
+                    let mut ret = vec![];
+
+                    loop {
+                        let index = self.get_index(table_name, &index_name)?;
+                        let (record, page, slot) = index.get_record(&mut fs, iter)?;
+                        // Iteration ended
+                        if record > right_key {
+                            break ret;
+                        }
+                        let table = self.get_table(table_name)?;
+                        if let Some(record) = table.select_page_slot(
+                            &mut fs,
+                            page,
+                            slot,
+                            selectors,
+                            where_clauses.as_slice(),
+                        )? {
+                            ret.push((record, page, slot));
+                        }
+                        if let Some(new_iter) = index.inc_iter(&mut fs, iter)? {
+                            iter = new_iter;
+                        } else {
+                            break ret;
+                        }
+                    }
                 } else {
-                    break ret;
+                    table.select(&mut fs, selectors, where_clauses.as_slice())?
                 }
             }
-        } else {
-            table.select(&mut fs, selectors, where_clauses.as_slice())?
+            2 => self.join_select(selectors, tables, where_clauses)?,
+            _ => return Err(Error::NotImplemented("Join on multiple tables")),
         };
 
         // Perform aggregation
@@ -673,15 +673,7 @@ impl System {
                         Selector::Aggregate { .. } | Selector::Count => {
                             aggregate = true;
                         }
-                        Selector::Column(c) => {
-                            if let Some(group_by) = &group_by {
-                                if c != group_by {
-                                    return Err(Error::MixedAggregate);
-                                }
-                            } else if aggregate {
-                                return Err(Error::MixedAggregate);
-                            }
-                        }
+                        _ => (),
                     }
                 }
 
