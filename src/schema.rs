@@ -206,6 +206,25 @@ impl Constraint {
                         return Err(Error::ForeignKeyTypeMismatch);
                     }
                 }
+
+                // Requires the referenced keys be primary key
+                let pk = schema1
+                    .constraints
+                    .iter()
+                    .find(|c| matches!(c, Constraint::PrimaryKey { .. }))
+                    .ok_or(Error::ForeignKeyNotPrimaryKey)?;
+
+                let pk_columns = pk.get_columns();
+
+                if ref_columns.len() != pk_columns.len() {
+                    return Err(Error::ForeignKeyNotPrimaryKey);
+                }
+
+                for column in ref_columns {
+                    if !pk_columns.contains(column) {
+                        return Err(Error::ForeignKeyNotPrimaryKey);
+                    }
+                }
             }
         }
         Ok(())
@@ -216,6 +235,14 @@ impl Constraint {
         match self {
             Self::PrimaryKey { name, .. } => name.as_deref(),
             Self::ForeignKey { name, .. } => name.as_deref(),
+        }
+    }
+
+    /// Get the columns of this constraint.
+    pub fn get_columns(&self) -> &[String] {
+        match self {
+            Self::PrimaryKey { columns, .. } => columns,
+            Self::ForeignKey { columns, .. } => columns,
         }
     }
 
@@ -725,11 +752,6 @@ impl TableSchema {
         self.schema.referred_constraints.push((table, constraint));
     }
 
-    /// Remove referred constraints from a table.
-    pub fn remove_referred_constraints(&mut self, table: &str) {
-        self.schema.referred_constraints.retain(|(t, _)| t != table);
-    }
-
     /// Remove the primary key on the table.
     pub fn remove_primary_key(&mut self) {
         log::info!("Dropping primary key");
@@ -765,6 +787,11 @@ impl TableSchema {
                 Constraint::ForeignKey { name: n, .. } => n.as_deref() != Some(name),
             }
         });
+    }
+
+    /// Remove referred constraints from a table.
+    pub fn remove_referred_constraints_of_table(&mut self, table: &str) {
+        self.schema.referred_constraints.retain(|(t, _)| t != table);
     }
 
     /// Get a column by its name.

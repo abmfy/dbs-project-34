@@ -452,10 +452,15 @@ impl Table {
         self.schema.remove_index(name);
     }
 
-    /// Save an constraint schema into the table.
+    /// Save a constraint schema into the table.
     pub fn add_constraint(&mut self, schema: Constraint) {
         log::info!("Adding constraint {schema:?}");
         self.schema.add_constraint(schema);
+    }
+
+    /// Remove a constraint from the table.
+    pub fn remove_constraint(&mut self, name: &str) {
+        self.schema.remove_constraint(name);
     }
 
     /// Save an referred constraint schema into the table.
@@ -469,9 +474,14 @@ impl Table {
         self.schema.remove_primary_key();
     }
 
-    /// Remove referred constraint on the table.
-    pub fn remove_referred_constraint(&mut self, table: &str) {
-        self.schema.remove_referred_constraints(table);
+    /// Remove a referred constraint.
+    pub fn remove_referred_constraint(&mut self, table: &str, name: &str) {
+        self.schema.remove_referred_constraint(table, name);
+    }
+
+    /// Remove all referred constraints from a given table.
+    pub fn remove_referred_constraint_of_table(&mut self, table: &str) {
+        self.schema.remove_referred_constraints_of_table(table);
     }
 }
 

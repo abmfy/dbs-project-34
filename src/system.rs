@@ -374,7 +374,7 @@ impl System {
                         false,
                         Some(&prefix),
                         ref_table,
-                        None,
+                        name,
                         ref_columns.as_slice(),
                         true,
                     )?;
@@ -414,7 +414,7 @@ impl System {
         for fk in foreign_keys {
             let ref_table = fk.get_ref_table();
             let ref_table = self.get_table_mut(ref_table)?;
-            ref_table.remove_referred_constraint(name);
+            ref_table.remove_referred_constraint_of_table(name);
             fk_indexes.push((fk.get_ref_table().to_owned(), fk.get_index_name(false)));
         }
 
@@ -963,7 +963,9 @@ impl System {
             .iter()
             .filter(|(_, fk)| {
                 if let Constraint::ForeignKey { ref_columns, .. } = fk {
-                    ref_columns.iter().any(|column| set_columns.contains(column))
+                    ref_columns
+                        .iter()
+                        .any(|column| set_columns.contains(column))
                 } else {
                     false
                 }
@@ -1656,7 +1658,7 @@ impl System {
         if let Constraint::PrimaryKey { name, .. } = constraint {
             if let (Some(name), Some(constraint_name)) = (name.as_deref(), constraint_name) {
                 if name != constraint_name {
-                    return Err(Error::NoPrimaryKey(table_name.to_owned()));
+                    return Err(Error::ConstraintNotFound(constraint_name.to_owned()));
                 }
             }
         } else {
@@ -1669,6 +1671,150 @@ impl System {
 
         let table = self.get_table_mut(table_name)?;
         table.remove_primary_key();
+
+        Ok(())
+    }
+
+    /// Execute add foreign key statement.
+    pub fn add_foreign_key(
+        &mut self,
+        table_name: &str,
+        constraint_name: Option<&str>,
+        columns: &[&str],
+        ref_table_name: &str,
+        ref_columns: &[&str],
+    ) -> Result<()> {
+        log::info!("Executing add foreign key statement");
+
+        self.open_table(table_name)?;
+        self.open_table(ref_table_name)?;
+
+        let constraint = Constraint::ForeignKey {
+            name: constraint_name.map(|s| s.to_owned()),
+            columns: columns.iter().map(|&s| s.to_owned()).collect(),
+            referrer: table_name.to_owned(),
+            ref_table: ref_table_name.to_owned(),
+            ref_columns: ref_columns.iter().map(|&s| s.to_owned()).collect(),
+        };
+
+        // Check constraint schemas
+        let table = self.get_table(table_name)?;
+        let ref_table = self.get_table(ref_table_name)?;
+        let schema0 = table.get_schema().get_schema();
+        let schema1 = ref_table.get_schema().get_schema();
+        constraint.check(&[schema0, schema1])?;
+
+        log::info!("Creating index for foreign key {constraint_name:?}");
+        self.add_index(
+            false,
+            Some("fk_referrer"),
+            table_name,
+            constraint_name,
+            columns,
+            false,
+        )?;
+
+        let prefix = format!("fk_referred.{}", table_name);
+        self.add_index(
+            false,
+            Some(&prefix),
+            ref_table_name,
+            constraint_name,
+            ref_columns,
+            true,
+        )?;
+
+        // Initialize the index, while checking for foreign key existence.
+        let index_name = constraint.get_index_name(true);
+        let index_name_referred = constraint.get_index_name(false);
+
+        let index = self.get_index(table_name, &index_name)?;
+        let selector = index.get_selector();
+
+        let mut fs = FS.lock()?;
+
+        let table = self.get_table(table_name)?;
+        let pages = table.get_schema().get_pages();
+        for i in 0..pages {
+            log::info!("Adding index for page {i}");
+            let table = self.get_table(table_name)?;
+            let keys = table.select_page(&mut fs, i, &selector, &[])?;
+
+            // Check foreign key constraint
+            let mut failed = false;
+            let index_referred = self.get_index(ref_table_name, &index_name_referred)?;
+            for (key, _, _) in &keys {
+                log::info!("Checking foreign key {key:?}");
+                if !index_referred.contains(&mut fs, key)? {
+                    failed = true;
+                    break;
+                }
+            }
+
+            if failed {
+                drop(fs);
+                self.drop_index(table_name, &index_name)?;
+                self.drop_index(ref_table_name, &index_name_referred)?;
+                return Err(Error::ReferencedFieldsNotExist(
+                    constraint.get_display_name(),
+                ));
+            }
+
+            log::info!("Foreign key check ok, inserting index");
+
+            let index = self.get_index_mut(table_name, &index_name)?;
+            for (key, _, slot) in keys {
+                index.insert(&mut fs, key, i, slot)?;
+            }
+        }
+
+        let table = self.get_table_mut(table_name)?;
+        table.add_constraint(constraint.clone());
+
+        let ref_table = self.get_table_mut(ref_table_name)?;
+        ref_table.add_referred_constraint(table_name.to_owned(), constraint);
+
+        Ok(())
+    }
+
+    /// Execute drop foreign key statement.
+    pub fn drop_foreign_key(&mut self, table_name: &str, constraint_name: &str) -> Result<()> {
+        log::info!("Executing drop foreign key statement");
+
+        self.open_table(table_name)?;
+        let table = self.get_table(table_name)?;
+
+        let schema = table.get_schema();
+        let fks = schema.get_foreign_keys();
+
+        let mut constraint = None;
+        for fk in fks {
+            if let Constraint::ForeignKey { name, .. } = fk {
+                if let Some(name) = name.as_deref() {
+                    if name == constraint_name {
+                        constraint = Some(fk.clone());
+                        break;
+                    }
+                }
+            }
+        }
+        if constraint.is_none() {
+            return Err(Error::ConstraintNotFound(constraint_name.to_owned()));
+        }
+        let constraint = constraint.unwrap();
+
+        let index_name = constraint.get_index_name(true);
+        self.drop_index(table_name, &index_name)?;
+
+        let index_name = constraint.get_index_name(false);
+        let ref_table_name = constraint.get_ref_table();
+        self.drop_index(ref_table_name, &index_name)?;
+
+        let table = self.get_table_mut(table_name)?;
+        table.remove_constraint(constraint_name);
+
+        let ref_table = self.get_table_mut(ref_table_name)?;
+        ref_table.remove_referred_constraint_of_table(table_name);
 
         Ok(())
     }

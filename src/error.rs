@@ -33,6 +33,8 @@ pub enum Error {
     TableNotFound(String),
     #[error("Column `{0}` not found")]
     ColumnNotFound(String),
+    #[error("Constraint `{0}` not found")]
+    ConstraintNotFound(String),
     #[error("Inexact column name `{0}`")]
     InexactColumn(String),
     #[error("Index `{0}` on table `{1}` not found")]
@@ -56,6 +58,8 @@ pub enum Error {
 
     #[error("Constraint failed: types of foreign keys mismatch")]
     ForeignKeyTypeMismatch,
+    #[error("Constraint failed: referenced fields not primary key")]
+    ForeignKeyNotPrimaryKey,
     #[error("Constraint failed: duplicate value `{0}`")]
     DuplicateValue(String),
     #[error("Constraint failed: columns referenced by foreign key must be primary key")]

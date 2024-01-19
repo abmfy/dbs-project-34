@@ -1002,6 +1002,8 @@ fn parse_alter_statement(
         Rule::alter_drop_index => parse_drop_index_statement(system, pair.into_inner()),
         Rule::alter_add_primary_key => parse_add_primary_key_statement(system, pair.into_inner()),
         Rule::alter_drop_primary_key => parse_drop_primary_key_statement(system, pair.into_inner()),
+        Rule::alter_add_foreign_key => parse_add_foreign_key_statement(system, pair.into_inner()),
+        Rule::alter_drop_foreign_key => parse_drop_foreign_key_statement(system, pair.into_inner()),
         _ => todo!(),
     }
 }
@@ -1117,6 +1119,81 @@ fn parse_drop_primary_key_statement(
     let table = table.unwrap();
 
     system.drop_primary_key(table, constraint)?;
+
+    Ok((fresh_table(), QueryStat::Update(0)))
+}
+
+fn parse_add_foreign_key_statement(
+    system: &mut System,
+    pairs: Pairs<Rule>,
+) -> Result<(Table, QueryStat)> {
+    let mut table = None;
+    let mut constraint = None;
+    let mut columns = None;
+    let mut ref_table = None;
+    let mut ref_columns = None;
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::identifier => {
+                table = Some(pair.as_str());
+            }
+            Rule::constraint_clause => {
+                constraint = Some(parse_identifier(pair.into_inner()));
+            }
+            Rule::identifiers => {
+                columns = Some(parse_identifiers(pair.into_inner()));
+            }
+            Rule::references_clause => {
+                for pair in pair.into_inner() {
+                    match pair.as_rule() {
+                        Rule::identifier => {
+                            ref_table = Some(pair.as_str());
+                        }
+                        Rule::identifiers => {
+                            ref_columns = Some(parse_identifiers(pair.into_inner()));
+                        }
+                        _ => continue,
+                    }
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    let table = table.unwrap();
+    let columns = columns.unwrap();
+    let ref_table = ref_table.unwrap();
+    let ref_columns = ref_columns.unwrap();
+
+    system.add_foreign_key(table, constraint, &columns, ref_table, &ref_columns)?;
+
+    Ok((fresh_table(), QueryStat::Update(0)))
+}
+
+fn parse_drop_foreign_key_statement(
+    system: &mut System,
+    pairs: Pairs<Rule>,
+) -> Result<(Table, QueryStat)> {
+    let mut table = None;
+    let mut constraint = None;
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::identifier => {
+                table = Some(pair.as_str());
+            }
+            Rule::index_identifier => {
+                constraint = Some(parse_identifier(pair.into_inner()));
+            }
+            _ => continue,
+        }
+    }
+
+    let table = table.unwrap();
+    let constraint = constraint.unwrap();
+
+    system.drop_foreign_key(table, constraint)?;
 
     Ok((fresh_table(), QueryStat::Update(0)))
 }
